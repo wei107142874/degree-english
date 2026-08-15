@@ -125,4 +125,5 @@ export interface Settings {
   dailyNewWords: number;   // 每日新词目标
   examDate: string | null; // 考试日期 YYYY-MM-DD
   mockSectionConfig: ExamSectionConfig[]; // 模拟卷题型配置
+  speakEngine: 'auto' | 'local' | 'online'; // 朗读引擎：自动/本地/在线
 }

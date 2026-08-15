@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS: Settings = {
   dailyNewWords: 40,
   examDate: null,
   mockSectionConfig: DEFAULT_SECTION_CONFIG,
+  speakEngine: 'auto',
 };
 
 interface SettingsStore {

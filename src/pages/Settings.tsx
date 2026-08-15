@@ -5,7 +5,8 @@ import { useAttemptStore } from '../store/useAttemptStore'
 import { usePlanStore } from '../store/usePlanStore'
 import { exportAll, importAll } from '../db/db'
 import { DEFAULT_SECTION_CONFIG } from '../lib/examConfig'
-import { Card } from '../components/common'
+import { Card, speak } from '../components/common'
+import { engineStatus } from '../lib/speech'
 
 export default function Settings() {
   const settings = useSettingsStore(s => s.settings)
@@ -86,6 +87,31 @@ export default function Settings() {
           ))}
           <button onClick={() => update({ mockSectionConfig: DEFAULT_SECTION_CONFIG })} className="mt-2 text-xs text-blue-600">恢复默认配置</button>
         </div>
+      </Card>
+
+      <Card>
+        <h2 className="font-bold text-slate-800 mb-2">🔊 朗读设置</h2>
+        <p className="text-xs text-slate-500 mb-3">手机没声音？选「在线发音」即可（需要联网，音质清晰）。本地语音离线可用，但国产安卓手机常无英语语音。</p>
+        <div className="flex gap-2 mb-3">
+          {(['auto', 'local', 'online'] as const).map(e => (
+            <button
+              key={e}
+              onClick={() => update({ speakEngine: e })}
+              className={'flex-1 py-2 rounded-lg text-sm ' + (settings.speakEngine === e ? 'bg-blue-600 text-white' : 'border border-slate-300 text-slate-600')}
+            >
+              {e === 'auto' ? '自动' : e === 'local' ? '本地语音' : '在线发音'}
+            </button>
+          ))}
+        </div>
+        <div className={'text-xs rounded-lg px-3 py-2 mb-3 ' + (engineStatus().local ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700')}>
+          {engineStatus().note}
+        </div>
+        <button
+          onClick={() => speak('ability', 'en-US')}
+          className="w-full border border-blue-300 text-blue-600 py-2.5 rounded-lg text-sm hover:bg-blue-50"
+        >
+          🔊 测试发音（ability）
+        </button>
       </Card>
 
       <Card>
