@@ -82,6 +82,14 @@ export default function WordStudy() {
 
   const current = queue[idx]
 
+  // 自动朗读：闪卡模式下每出现一张新卡片（含进入学习的第一张）自动发音一遍。
+  // 自测模式不自动读，避免听力剧透答案。
+  useEffect(() => {
+    if (mode === 'flashcard' && current) {
+      void speak(current.spelling)
+    }
+  }, [current?.id, mode]) // eslint-disable-line
+
   // 自测选项缓存（保证与显示一致）
   const [optionsCache, setOptionsCache] = useState<Word[]>([])
   useEffect(() => {
