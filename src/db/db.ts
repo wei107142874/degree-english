@@ -1,5 +1,6 @@
 import { openDB, type IDBPDatabase } from 'idb';
 import type { SrsState, Attempt, StudyPlan, Settings } from '../types';
+import { now } from '../sync/clock';
 
 const DB_NAME = 'degree-english-db';
 const DB_VERSION = 1;
@@ -53,6 +54,22 @@ export async function getAll<T>(store: string): Promise<T[]> {
 export async function clearStore(store: string) {
   const db = await getDb();
   await db.clear(store);
+}
+
+export async function deleteRecord(store: string, key: string) {
+  const db = await getDb();
+  await db.delete(store, key);
+}
+
+/** 给记录盖上修改时间戳（局域网同步用，使用校准后的服务器时间） */
+export function stamp<T extends { updatedAt?: number }>(record: T): T {
+  return { ...record, updatedAt: now() };
+}
+
+/** 写入一条记录，自动带上 updatedAt（保留已有的，不覆盖） */
+export async function putRecord<T extends { updatedAt?: number }>(store: string, record: T) {
+  const db = await getDb();
+  await db.put(store, record.updatedAt ? record : stamp(record));
 }
 
 // 导出全部用户数据（备份）

@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { ALL_WORDS } from '../data/words'
 import type { Word } from '../types'
 import { useSrsStore } from '../store/useSrsStore'
+import { useSettingsStore } from '../store/useSettingsStore'
 import { speak } from '../components/common'
+import { WORD_ORDER_SEED, buildOrderIndex } from '../lib/wordOrder'
 
 type Mode = 'flashcard' | 'quiz'
 
@@ -20,6 +22,7 @@ export default function WordStudy() {
 
   const states = useSrsStore(s => s.states)
   const review = useSrsStore(s => s.review)
+  const settings = useSettingsStore(s => s.settings)
 
   const dueWords = useMemo(() => {
     const now = Date.now()
@@ -29,14 +32,26 @@ export default function WordStudy() {
     })
   }, [states])
 
+  // 固定随机词序：种子持久化在设置里（IndexedDB + 局域网同步 + 备份），
+  // 电脑与手机同种子 → 完全一致的顺序，且不会随会话变化。
+  const orderIndex = useMemo(
+    () => buildOrderIndex(ALL_WORDS, settings.wordOrderSeed ?? WORD_ORDER_SEED),
+    [settings.wordOrderSeed],
+  )
+
+  // 新词按固定词序排列，未学部分取最靠前的作为每日任务
   const newWords = useMemo(() => {
-    return ALL_WORDS.filter(w => !states[w.id] || states[w.id].level === 0)
-  }, [states])
+    return ALL_WORDS
+      .filter(w => !states[w.id] || states[w.id].level === 0)
+      .sort((a, b) => (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0))
+  }, [states, orderIndex])
+
+  const dailyGoal = Math.max(1, Math.min(100, settings.dailyNewWords || 30))
 
   const buildQueue = (m: Mode) => {
     const due = dueWords.slice(0, 50)
-    // 新词随机打乱，避免按字母序“背顺序”造成的假熟练
-    const fresh = shuffle(newWords).slice(0, 30)
+    // 新词按固定随机序依次取每日目标量，顺序保持稳定
+    const fresh = newWords.slice(0, dailyGoal)
     const q = m === 'flashcard' ? [...due, ...fresh] : shuffle([...due, ...fresh]).slice(0, 20)
     setQueue(q)
     setIdx(0)
@@ -170,7 +185,7 @@ export default function WordStudy() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">闪卡学习</h1>
       <div className="flex items-center justify-between text-sm text-slate-500">
-        <span>{idx + 1} / {queue.length}（复习 {Math.min(dueWords.length, 50)} · 新词 {Math.min(newWords.length, 30)}·随机）</span>
+        <span>{idx + 1} / {queue.length}（复习 {Math.min(dueWords.length, 50)} · 新词 {Math.min(newWords.length, dailyGoal)}）</span>
         <button onClick={() => setMode('quiz')} className="text-blue-600">切到自测模式</button>
       </div>
 

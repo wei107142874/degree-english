@@ -17,6 +17,7 @@ import { useSrsStore } from './store/useSrsStore'
 import { useAttemptStore } from './store/useAttemptStore'
 import { usePlanStore } from './store/usePlanStore'
 import { useSettingsStore } from './store/useSettingsStore'
+import { initSync } from './sync/client'
 
 
 export default function App() {
@@ -30,6 +31,8 @@ export default function App() {
     loadAttempts()
     loadPlan()
     loadSettings()
+    // 局域网同步：探测服务器并自动双向同步（由 server.mjs 提供）
+    initSync()
     // PWA service worker 由 vite-plugin-pwa 自动注册（dev 模式下不注册）
     if (import.meta.env.PROD && 'serviceWorker' in navigator) {
       window.addEventListener('load', () => {

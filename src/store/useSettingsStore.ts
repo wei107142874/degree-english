@@ -1,14 +1,16 @@
 import { create } from 'zustand';
 import type { Settings, ExamSectionConfig } from '../types';
-import { getDb } from '../db/db';
+import { getDb, putRecord } from '../db/db';
 import { DEFAULT_SECTION_CONFIG } from '../lib/examConfig';
+import { WORD_ORDER_SEED } from '../lib/wordOrder';
 
 const DEFAULT_SETTINGS: Settings = {
   id: 'main',
-  dailyNewWords: 40,
+  dailyNewWords: 30,
   examDate: null,
   mockSectionConfig: DEFAULT_SECTION_CONFIG,
   speakEngine: 'auto',
+  wordOrderSeed: WORD_ORDER_SEED,
 };
 
 interface SettingsStore {
@@ -31,8 +33,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   update: async (patch) => {
     const next = { ...get().settings, ...patch };
-    const db = await getDb();
-    await db.put('settings', next);
+    await putRecord('settings', next);
     set({ settings: next });
   },
 }));

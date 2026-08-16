@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSettingsStore } from '../store/useSettingsStore'
 import { useSrsStore } from '../store/useSrsStore'
 import { useAttemptStore } from '../store/useAttemptStore'
@@ -8,6 +8,10 @@ import { DEFAULT_SECTION_CONFIG } from '../lib/examConfig'
 import { Card, speak } from '../components/common'
 import LearningGuide from '../components/LearningGuide'
 import { engineStatus } from '../lib/speech'
+import {
+  getSyncStatus, onSyncStatus, getServerInfo,
+  syncNow, syncPullOverwrite, syncPushOverwrite, syncClearAll,
+} from '../sync/client'
 
 export default function Settings() {
   const settings = useSettingsStore(s => s.settings)
@@ -18,6 +22,9 @@ export default function Settings() {
   const [examDate, setExamDate] = useState(settings.examDate ?? '')
   const [daily, setDaily] = useState(settings.dailyNewWords)
   const [msg, setMsg] = useState('')
+  const [syncStatus, setSyncStatus] = useState(getSyncStatus())
+
+  useEffect(() => onSyncStatus(setSyncStatus), [])
 
   const save = async () => {
     await update({ examDate: examDate || null, dailyNewWords: daily })
@@ -51,7 +58,9 @@ export default function Settings() {
   const doResetAll = async () => {
     if (!confirm('确定要清空全部学习数据吗？此操作不可恢复！')) return
     await Promise.all([resetSrs(), resetAttempts(), resetPlan()])
-    await update({ examDate: null, dailyNewWords: 40 })
+    await update({ examDate: null, dailyNewWords: 30 })
+    // 同时清空局域网服务器上的数据，避免下次同步把旧数据拉回来
+    await syncClearAll()
     setMsg('已清空全部数据')
     setTimeout(() => location.reload(), 800)
   }
@@ -115,6 +124,59 @@ export default function Settings() {
         >
           🔊 测试发音（ability）
         </button>
+      </Card>
+
+      <Card>
+        <h2 className="font-bold text-slate-800 mb-2">🌐 局域网同步</h2>
+        <p className="text-xs text-slate-500 mb-3">
+          在电脑上双击《启动学习助手.bat》启动服务器，手机连<b>同一 Wi-Fi</b> 后打开电脑上显示的地址（如 http://192.168.x.x:4173），两端学习记录即自动双向同步（打开页面时、联网恢复时、每 5 分钟各同步一次）。
+        </p>
+
+        {syncStatus.supported === null && (
+          <div className="text-xs text-slate-500 rounded-lg px-3 py-2 bg-slate-50">正在检测同步服务器…</div>
+        )}
+
+        {syncStatus.supported === false && (
+          <div className="text-xs text-amber-700 rounded-lg px-3 py-2 bg-amber-50">
+            {syncStatus.message || '未检测到局域网同步服务器'}。当前页面若由 GitHub Pages 等静态托管提供，仅支持下方「数据备份」手动导入导出。
+          </div>
+        )}
+
+        {syncStatus.supported && (
+          <div className="space-y-2">
+            <div className="text-xs text-green-700 rounded-lg px-3 py-2 bg-green-50">
+              ✅ {syncStatus.message}
+              {getServerInfo()?.addresses?.length ? (
+                <span className="block mt-1 text-slate-600">
+                  手机访问地址：<b>{getServerInfo()!.addresses.map(ip => `http://${ip}:4173`).join('　')}</b>
+                </span>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => { setSyncStatus({ ...syncStatus, syncing: true }); syncNow() }}
+                disabled={syncStatus.syncing}
+                className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
+              >
+                {syncStatus.syncing ? '同步中…' : '🔄 立即同步'}
+              </button>
+              <button
+                onClick={() => confirm('确定用电脑端数据覆盖本机数据吗？本机未同步的新记录会丢失。') && syncPullOverwrite()}
+                disabled={syncStatus.syncing}
+                className="border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-600 disabled:opacity-50"
+              >
+                ⬇️ 用电脑数据覆盖本机
+              </button>
+              <button
+                onClick={() => confirm('确定用本机数据覆盖电脑端数据吗？电脑端未同步的新记录会丢失。') && syncPushOverwrite()}
+                disabled={syncStatus.syncing}
+                className="border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-600 disabled:opacity-50"
+              >
+                ⬆️ 用本机覆盖电脑
+              </button>
+            </div>
+          </div>
+        )}
       </Card>
 
       <Card>

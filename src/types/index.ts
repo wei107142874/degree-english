@@ -20,6 +20,7 @@ export interface SrsState {
   wrongCount: number;    // 累计错误次数
   reviewCount: number;   // 复习次数
   lastReview: number;    // 上次复习时间戳
+  updatedAt?: number;    // 最后修改时间（局域网同步用）
 }
 
 // ---------- 语法 ----------
@@ -95,6 +96,7 @@ export interface Attempt {
   ts: number;
   source: 'practice' | 'mock' | 'quiz';
   mockId?: string;
+  updatedAt?: number;    // 最后修改时间（局域网同步用）
 }
 
 // ---------- 学习计划 ----------
@@ -117,6 +119,7 @@ export interface StudyPlan {
   dailyGoal: number;     // 每日新词目标
   mode: 'standard' | 'sprint';
   tasks: DailyTask[];
+  updatedAt?: number;    // 最后修改时间（局域网同步用）
 }
 
 // ---------- 设置 ----------
@@ -126,4 +129,6 @@ export interface Settings {
   examDate: string | null; // 考试日期 YYYY-MM-DD
   mockSectionConfig: ExamSectionConfig[]; // 模拟卷题型配置
   speakEngine: 'auto' | 'local' | 'online'; // 朗读引擎：自动/本地/在线
+  wordOrderSeed?: string;  // 固定随机词序的种子（所有设备同种子 = 同顺序）
+  updatedAt?: number;      // 最后修改时间（局域网同步用）
 }

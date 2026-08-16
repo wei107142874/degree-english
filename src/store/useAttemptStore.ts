@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Attempt, QuestionSection } from '../types';
-import { getDb } from '../db/db';
+import { getDb, putRecord } from '../db/db';
 
 interface AttemptStore {
   attempts: Attempt[];
@@ -32,8 +32,7 @@ export const useAttemptStore = create<AttemptStore>((set, get) => ({
 
   add: async (a) => {
     const attempt: Attempt = { ...a, id: crypto.randomUUID(), ts: Date.now() };
-    const db = await getDb();
-    await db.put('attempts', attempt);
+    await putRecord('attempts', attempt);
     set({ attempts: [...get().attempts, attempt] });
   },
 

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { StudyPlan } from '../types';
-import { getDb } from '../db/db';
+import { getDb, putRecord } from '../db/db';
 import { generatePlan } from '../lib/planner';
 
 interface PlanStore {
@@ -25,8 +25,7 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
 
   create: async (examDate, dailyNewWords, mode = 'standard') => {
     const plan = generatePlan(examDate, dailyNewWords, mode);
-    const db = await getDb();
-    await db.put('plan', plan);
+    await putRecord('plan', plan);
     set({ plan });
   },
 
@@ -39,8 +38,7 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
       ...plan,
       tasks: plan.tasks.map(tk => tk.date === stamp ? { ...tk, done: !tk.done, doneTs: Date.now() } : tk),
     };
-    const db = await getDb();
-    await db.put('plan', updated);
+    await putRecord('plan', updated);
     set({ plan: updated });
   },
 

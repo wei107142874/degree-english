@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { SrsState } from '../types';
-import { getDb } from '../db/db';
+import { getDb, putRecord } from '../db/db';
 import { getDueWords, getNewWords, todayStamp } from '../lib/srs';
 
 interface SrsStore {
@@ -50,8 +50,7 @@ export const useSrsStore = create<SrsStore>((set, get) => ({
       reviewCount: prev.reviewCount + 1,
       lastReview: Date.now(),
     };
-    const db = await getDb();
-    await db.put('srs', next);
+    await putRecord('srs', next);
     set({ states: { ...get().states, [wordId]: next } });
   },
 
@@ -59,8 +58,7 @@ export const useSrsStore = create<SrsStore>((set, get) => ({
     const prev = get().states[wordId] ?? EMPTY_STATE(wordId);
     if (prev.level >= 1) return;
     const next: SrsState = { ...prev, level: 1, interval: 1, due: Date.now() + 86400000, lastReview: Date.now() };
-    const db = await getDb();
-    await db.put('srs', next);
+    await putRecord('srs', next);
     set({ states: { ...get().states, [wordId]: next } });
   },
 
