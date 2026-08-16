@@ -234,7 +234,7 @@ export default function WordStudy() {
             onClick={() => { setMaskWord(m => !m); setFlipped(false) }}
             className={maskWord ? 'text-amber-600 font-medium' : 'text-blue-600'}
             title="遮罩单词：正面只显示中文释义，翻面才显示英文单词"
-          >{maskWord ? '👁 显示单词' : '🔒 遮罩单词'}</button>
+          >{maskWord ? '👁 单词' : '🔒 单词'}</button>
           <button onClick={() => setMode('quiz')} className="text-blue-600">切到自测模式</button>
         </div>
       </div>

@@ -195,14 +195,14 @@ export default function Words() {
             maskMean ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
           }`}
           title="开启后释义隐藏，只留英文单词，单击显示释义"
-        >{maskMean ? '👁 显示释义' : '🔒 遮罩释义'}</button>
+        >{maskMean ? '👁 释义' : '🔒 释义'}</button>
         <button
           onClick={() => { setMaskWord(m => !m); setRevealed(new Set()) }}
           className={`px-3 py-2 rounded-lg text-sm ${
             maskWord ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
           }`}
           title="开启后英文单词隐藏，只留中文释义，单击显示单词"
-        >{maskWord ? '👁 显示单词' : '🔒 遮罩单词'}</button>
+        >{maskWord ? '👁 单词' : '🔒 单词'}</button>
       </div>
 
       {learnedFilter === 'learned' && groups.length > 0 ? (
