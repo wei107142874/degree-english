@@ -9,13 +9,20 @@ const PAGE_SIZE = 100
 export default function Words() {
   const [q, setQ] = useState('')
   const [tier, setTier] = useState<number | null>(null)
+  const [learnedFilter, setLearnedFilter] = useState<'all' | 'new' | 'learned'>('all')
   const [page, setPage] = useState(0)
   const states = useSrsStore(s => s.states)
 
-  const results = useMemo(() => searchWords(q, tier), [q, tier])
+  const results = useMemo(() => {
+    const base = searchWords(q, tier)
+    if (learnedFilter === 'all') return base
+    return base.filter(w => {
+      const lv = states[w.id]?.level ?? 0
+      return learnedFilter === 'learned' ? lv >= 1 : lv === 0
+    })
+  }, [q, tier, learnedFilter, states])
   const pageItems = results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
-  const statesList = useSrsStore(s => s.states)
-  const learned = Object.values(statesList).filter(s => s.level >= 1).length
+  const learned = Object.values(states).filter(s => s.level >= 1).length
   const totalPages = Math.max(1, Math.ceil(results.length / PAGE_SIZE))
 
   return (
@@ -56,6 +63,18 @@ export default function Words() {
             >{TIER_LABELS[t]}</button>
           ))}
         </div>
+      </div>
+
+      <div className="flex gap-1">
+        {(['all', 'new', 'learned'] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => { setLearnedFilter(f); setPage(0) }}
+            className={`px-3 py-2 rounded-lg text-sm ${
+              learnedFilter === f ? 'bg-green-600 text-white' : 'bg-white border border-slate-300 text-slate-600'
+            }`}
+          >{f === 'all' ? '全部' : f === 'new' ? '未学' : '✅ 已学'}</button>
+        ))}
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
