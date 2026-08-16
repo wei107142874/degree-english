@@ -35,7 +35,8 @@ export default function WordStudy() {
 
   const buildQueue = (m: Mode) => {
     const due = dueWords.slice(0, 50)
-    const fresh = newWords.slice(0, 30)
+    // 新词随机打乱，避免按字母序“背顺序”造成的假熟练
+    const fresh = shuffle(newWords).slice(0, 30)
     const q = m === 'flashcard' ? [...due, ...fresh] : shuffle([...due, ...fresh]).slice(0, 20)
     setQueue(q)
     setIdx(0)
@@ -169,7 +170,7 @@ export default function WordStudy() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">闪卡学习</h1>
       <div className="flex items-center justify-between text-sm text-slate-500">
-        <span>{idx + 1} / {queue.length}（复习 {Math.min(dueWords.length, 50)} · 新词 {Math.min(newWords.length, 30)}）</span>
+        <span>{idx + 1} / {queue.length}（复习 {Math.min(dueWords.length, 50)} · 新词 {Math.min(newWords.length, 30)}·随机）</span>
         <button onClick={() => setMode('quiz')} className="text-blue-600">切到自测模式</button>
       </div>
 
