@@ -55,3 +55,19 @@ export function masteryRate(states: SrsState[]): number {
   if (learned.length === 0) return 0;
   return learned.filter(s => s.level >= 3).length / learned.length;
 }
+
+/**
+ * 徽章等级：按累计正确认识次数指数级递增，无上限。
+ * 门槛序列 5, 15, 45, 135, ...（每次 ×3）：
+ * 1级=认识 5 次，2级=15 次，3级=45 次起（50 次已在第 3 级内），依次类推。
+ * 答错不减徽章等级（复习调度仍会缩短间隔）。
+ */
+export function badgeLevel(correctCount: number): number {
+  let level = 0;
+  let threshold = 5;
+  while (correctCount >= threshold) {
+    level++;
+    threshold *= 3;
+  }
+  return level;
+}

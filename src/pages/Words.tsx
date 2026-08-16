@@ -4,6 +4,7 @@ import { ALL_WORDS, TIER_LABELS, searchWords } from '../data/words'
 import { useSrsStore } from '../store/useSrsStore'
 import { useSettingsStore } from '../store/useSettingsStore'
 import { WORD_ORDER_SEED, buildOrderIndex } from '../lib/wordOrder'
+import { badgeLevel } from '../lib/srs'
 import { Card, ProgressBar, speak } from '../components/common'
 
 const PAGE_SIZE = 100
@@ -91,6 +92,8 @@ export default function Words() {
         <ul className="divide-y divide-slate-100">
           {pageItems.map(w => {
             const st = states[w.id]
+            const cc = st ? Math.max(0, st.reviewCount - st.wrongCount) : 0
+            const lv = badgeLevel(cc)
             return (
               <li key={w.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
                 <div className="flex-1 min-w-0">
@@ -101,7 +104,12 @@ export default function Words() {
                     <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                       w.tier === 1 ? 'bg-red-100 text-red-600' : w.tier === 2 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-500'
                     }`}>{TIER_LABELS[w.tier]}</span>
-                    {st && st.level >= 1 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-600">已学 Lv{st.level}</span>}
+                    {st && st.level >= 1 && (
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-600"
+                        title={`正确认识 ${cc} 次`}
+                      >已学{lv >= 1 ? ` Lv${lv}` : ''}</span>
+                    )}
                   </div>
                   <div className="text-sm text-slate-500 truncate">{w.meanings.join('；')}</div>
                 </div>

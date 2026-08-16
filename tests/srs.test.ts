@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { srsInterval, getDueWords, getNewWords, masteryRate } from '../src/lib/srs'
+import { srsInterval, getDueWords, getNewWords, masteryRate, badgeLevel } from '../src/lib/srs'
 import type { SrsState } from '../src/types'
 
 function state(over: Partial<SrsState> = {}): SrsState {
@@ -48,5 +48,24 @@ describe('掌握度', () => {
   })
   it('没有已学词时返回 0', () => {
     expect(masteryRate([])).toBe(0)
+  })
+})
+
+describe('徽章等级（无上限，指数递增）', () => {
+  it('按累计正确次数分级：5/15/45/135 为边界', () => {
+    expect(badgeLevel(0)).toBe(0)
+    expect(badgeLevel(4)).toBe(0)
+    expect(badgeLevel(5)).toBe(1)
+    expect(badgeLevel(14)).toBe(1)
+    expect(badgeLevel(15)).toBe(2)
+    expect(badgeLevel(44)).toBe(2)
+    expect(badgeLevel(45)).toBe(3)
+    expect(badgeLevel(50)).toBe(3)
+    expect(badgeLevel(134)).toBe(3)
+    expect(badgeLevel(135)).toBe(4)
+  })
+  it('无上限：很高的次数也有对应等级', () => {
+    expect(badgeLevel(1215)).toBe(6)
+    expect(badgeLevel(100000)).toBe(10)
   })
 })
