@@ -49,6 +49,8 @@ export const useSrsStore = create<SrsStore>((set, get) => ({
       wrongCount: correct ? prev.wrongCount : prev.wrongCount + 1,
       reviewCount: prev.reviewCount + 1,
       lastReview: Date.now(),
+      // 首次学会（0 → 1）时记录学习日期，用于区分“今天新学”与“今天复习”
+      learnedAt: correct && prev.level === 0 ? (prev.learnedAt ?? Date.now()) : prev.learnedAt,
     };
     await putRecord('srs', next);
     set({ states: { ...get().states, [wordId]: next } });
@@ -57,7 +59,7 @@ export const useSrsStore = create<SrsStore>((set, get) => ({
   markLearned: async (wordId) => {
     const prev = get().states[wordId] ?? EMPTY_STATE(wordId);
     if (prev.level >= 1) return;
-    const next: SrsState = { ...prev, level: 1, interval: 1, due: Date.now() + 86400000, lastReview: Date.now() };
+    const next: SrsState = { ...prev, level: 1, interval: 1, due: Date.now() + 86400000, lastReview: Date.now(), learnedAt: prev.learnedAt ?? Date.now() };
     await putRecord('srs', next);
     set({ states: { ...get().states, [wordId]: next } });
   },

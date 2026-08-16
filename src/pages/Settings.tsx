@@ -103,7 +103,7 @@ export default function Settings() {
 
       <Card>
         <h2 className="font-bold text-slate-800 mb-2">🔊 朗读设置</h2>
-        <p className="text-xs text-slate-500 mb-3">手机没声音？选「在线发音」即可（需要联网，音质清晰）。本地语音离线可用，但国产安卓手机常无英语语音。</p>
+        <p className="text-xs text-slate-500 mb-3">「自动」优先在线发音（清晰稳定），断网时自动回退本地语音；「在线发音」始终联网发声；「本地语音」始终离线发声。</p>
         <div className="flex gap-2 mb-3">
           {(['auto', 'local', 'online'] as const).map(e => (
             <button

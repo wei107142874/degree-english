@@ -31,13 +31,14 @@ export function getTodayDue(states: SrsState[]): SrsState[] {
   const t = todayStamp();
   const due = getDueWords(states);
   // 如果今天已经复习过、但还在队列中的，不再重复列入
-  const reviewedToday = states.filter(s => s.level >= 1 && dateOf(s.lastReview) === t);
+  const reviewedToday = states.filter(s => s.level >= 1 && dateOfTs(s.lastReview) === t);
   const dueIds = new Set(due.map(s => s.wordId));
   const reviewedTodayIds = new Set(reviewedToday.map(s => s.wordId));
   return due.filter(s => !reviewedTodayIds.has(s.wordId) || !dueIds.has(s.wordId));
 }
 
-function dateOf(ts: number): string {
+/** 时间戳 → 本地日期字符串 YYYY-MM-DD */
+export function dateOfTs(ts: number): string {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }

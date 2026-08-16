@@ -4,6 +4,7 @@ export type SpeakEngine = 'auto' | 'local' | 'online'
 
 let voices: SpeechSynthesisVoice[] = []
 let voicesLoaded = false
+let currentAudio: HTMLAudioElement | null = null
 
 function loadVoices() {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
@@ -32,8 +33,24 @@ export function engineStatus(): { local: boolean; note: string } {
   return {
     local,
     note: local
-      ? '本机有英语语音，离线也能发音'
-      : '本机无英语语音（国产安卓常见），已自动使用在线发音（需联网）',
+      ? '本机有英语语音。「自动」模式优先在线发音，断网时自动回退本地语音'
+      : '本机无英语语音（国产安卓常见）。「自动」模式使用在线发音（需联网）',
+  }
+}
+
+/** 停止一切正在播放的声音（在线音频 + 本地语音），避免重叠 */
+function stopAll() {
+  if (currentAudio) {
+    try {
+      currentAudio.pause()
+      currentAudio.src = ''
+    } catch { /* 忽略 */ }
+    currentAudio = null
+  }
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    try {
+      window.speechSynthesis.cancel()
+    } catch { /* 忽略 */ }
   }
 }
 
@@ -41,7 +58,6 @@ function speakLocal(text: string, lang: string): boolean {
   if (!hasLocalEnglishVoice()) return false
   try {
     const synth = window.speechSynthesis
-    synth.cancel()
     const u = new SpeechSynthesisUtterance(text)
     u.lang = lang
     u.rate = 0.85
@@ -51,40 +67,59 @@ function speakLocal(text: string, lang: string): boolean {
       const exact = enVoices.find(v => (v.lang || '').toLowerCase() === lang.toLowerCase())
       u.voice = exact ?? enVoices[0]
     } catch { /* 忽略：使用默认语音 */ }
-    synth.speak(u)
+    // 某些浏览器 cancel() 后立即 speak() 会被吞掉，稍作延迟更稳
+    setTimeout(() => {
+      try { synth.speak(u) } catch { /* 忽略 */ }
+    }, 30)
     return true
   } catch {
     return false
   }
 }
 
-function speakOnline(text: string): boolean {
-  try {
-    // 有道词典发音接口：type=1 英音 / type=2 美音
-    const url = 'https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(text) + '&type=2'
-    const audio = new Audio(url)
-    audio.play().catch(() => {
-      // 自动播放被拒时（极少，因为通常是点击触发），忽略
-    })
-    return true
-  } catch {
-    return false
-  }
+function speakOnline(text: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(ok)
+    }
+    try {
+      // 有道词典发音接口：type=1 英音 / type=2 美音
+      const url = 'https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(text) + '&type=2'
+      const audio = new Audio(url)
+      currentAudio = audio
+      // 兜底超时：网络卡住时也能回退到本地语音
+      timer = setTimeout(() => finish(false), 6000)
+      audio.onerror = () => finish(false)
+      audio.play().then(() => finish(true)).catch(() => finish(false))
+    } catch {
+      finish(false)
+    }
+  })
 }
 
 /**
- * 朗读入口：按设置引擎朗读。返回实际使用的方式。
+ * 朗读入口：按设置引擎朗读。返回实际使用的方式（异步）。
  */
-export function speak(text: string, lang = 'en-US'): 'local' | 'online' | 'none' {
+export async function speak(text: string, lang = 'en-US'): Promise<'local' | 'online' | 'none'> {
   if (!text) return 'none'
   const engine = useSettingsStore.getState().settings.speakEngine ?? 'auto'
+
+  stopAll()
+
   if (engine === 'online') {
-    return speakOnline(text) ? 'online' : 'none'
+    return (await speakOnline(text)) ? 'online' : 'none'
   }
   if (engine === 'local') {
     return speakLocal(text, lang) ? 'local' : 'none'
   }
-  // auto：本地可用用本地，否则在线
-  if (speakLocal(text, lang)) return 'local'
-  return speakOnline(text) ? 'online' : 'none'
+  // auto：优先在线发音（清晰稳定，PC/手机都可靠）；离线或失败时回退本地语音
+  if (typeof navigator !== 'undefined' && navigator.onLine !== false) {
+    if (await speakOnline(text)) return 'online'
+  }
+  return speakLocal(text, lang) ? 'local' : 'none'
 }

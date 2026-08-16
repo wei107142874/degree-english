@@ -6,6 +6,8 @@ import { useSrsStore } from '../store/useSrsStore'
 import { useSettingsStore } from '../store/useSettingsStore'
 import { speak } from '../components/common'
 import { WORD_ORDER_SEED, buildOrderIndex } from '../lib/wordOrder'
+import { todayStamp } from '../lib/srs'
+import { buildTodayBatch } from '../lib/studyBatch'
 
 type Mode = 'flashcard' | 'quiz'
 
@@ -22,7 +24,9 @@ export default function WordStudy() {
 
   const states = useSrsStore(s => s.states)
   const review = useSrsStore(s => s.review)
+  const srsLoaded = useSrsStore(s => s.loaded)
   const settings = useSettingsStore(s => s.settings)
+  const settingsLoaded = useSettingsStore(s => s.loaded)
 
   const dueWords = useMemo(() => {
     const now = Date.now()
@@ -39,19 +43,28 @@ export default function WordStudy() {
     [settings.wordOrderSeed],
   )
 
-  // 新词按固定词序排列，未学部分取最靠前的作为每日任务
-  const newWords = useMemo(() => {
-    return ALL_WORDS
-      .filter(w => !states[w.id] || states[w.id].level === 0)
-      .sort((a, b) => (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0))
-  }, [states, orderIndex])
-
+  // 今日批次：今天新学的 ∪ 按固定随机序补齐到每日目标。
+  // 批次不随会话变化 —— 退出重进后仍是同一批，进度从上次继续。
   const dailyGoal = Math.max(1, Math.min(100, settings.dailyNewWords || 30))
+
+  const today = todayStamp()
+  const { batch, done: batchDone, remaining: fresh } = useMemo(
+    () => buildTodayBatch(ALL_WORDS, states, orderIndex, dailyGoal, today),
+    [states, orderIndex, dailyGoal, today],
+  )
+
+  const batchTotal = batch.length
+  const batchAllDone = batchTotal > 0 && batchDone >= batchTotal
+  const dueCount = Math.min(dueWords.length, 50)
+  const progressLabel = batchTotal === 0
+    ? '全部单词已学完'
+    : batchAllDone
+      ? `今日新词 ${batchTotal} 个已完成 ✓`
+      : `新词 第 ${batchDone + 1} / ${batchTotal} 个`
 
   const buildQueue = (m: Mode) => {
     const due = dueWords.slice(0, 50)
-    // 新词按固定随机序依次取每日目标量，顺序保持稳定
-    const fresh = newWords.slice(0, dailyGoal)
+    // 队列 = 到期复习词（优先）+ 今日批次中仍未学的新词（固定顺序）
     const q = m === 'flashcard' ? [...due, ...fresh] : shuffle([...due, ...fresh]).slice(0, 20)
     setQueue(q)
     setIdx(0)
@@ -62,7 +75,10 @@ export default function WordStudy() {
     setFinished(false)
   }
 
-  useEffect(() => { buildQueue(mode) }, []) // eslint-disable-line
+  // 等 SRS 与设置加载完成后再构建队列，避免用空状态建队导致重复/缺词
+  useEffect(() => {
+    if (srsLoaded && settingsLoaded) buildQueue(mode)
+  }, [srsLoaded, settingsLoaded]) // eslint-disable-line
 
   const current = queue[idx]
 
@@ -106,15 +122,32 @@ export default function WordStudy() {
     setTimeout(() => { setQuizChoice(null); next() }, 900)
   }
 
+  if (!srsLoaded || !settingsLoaded) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-2xl font-bold">开始学习</h1>
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">
+          <p className="text-slate-500">正在加载学习数据…</p>
+        </div>
+      </div>
+    )
+  }
+
   if (queue.length === 0) {
     return (
       <div className="space-y-4">
         <h1 className="text-2xl font-bold">开始学习</h1>
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center space-y-4">
-          <p className="text-slate-500">当前没有待学或待复习的单词</p>
+          <p className="text-slate-500">
+            {batchAllDone
+              ? `今日 ${batchTotal} 个新词已完成 🎉，明天继续下一批`
+              : '当前没有待学或待复习的单词'}
+          </p>
           <div className="flex justify-center gap-3">
-            <button onClick={() => buildQueue('flashcard')} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">重新加载队列</button>
-            <button onClick={() => navigate('/words')} className="border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-600">返回词库</button>
+            {!batchAllDone && (
+              <button onClick={() => buildQueue('flashcard')} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">重新加载队列</button>
+            )}
+            <button onClick={() => navigate('/')} className="border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-600">回首页</button>
           </div>
         </div>
       </div>
@@ -145,7 +178,7 @@ export default function WordStudy() {
       <div className="space-y-4">
         <h1 className="text-2xl font-bold">单词自测</h1>
         <div className="flex items-center justify-between text-sm text-slate-500">
-          <span>{idx + 1} / {queue.length}</span>
+          <span>{progressLabel}{dueCount > 0 ? ` · 复习 ${dueCount} 个到期` : ''}</span>
           <button onClick={() => setMode('flashcard')} className="text-blue-600">切到闪卡模式</button>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">
@@ -185,7 +218,7 @@ export default function WordStudy() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">闪卡学习</h1>
       <div className="flex items-center justify-between text-sm text-slate-500">
-        <span>{idx + 1} / {queue.length}（复习 {Math.min(dueWords.length, 50)} · 新词 {Math.min(newWords.length, dailyGoal)}）</span>
+        <span>{progressLabel}{dueCount > 0 ? ` · 复习 ${dueCount} 个到期` : ''}</span>
         <button onClick={() => setMode('quiz')} className="text-blue-600">切到自测模式</button>
       </div>
 
