@@ -8,6 +8,7 @@ import { speak } from '../components/common'
 import { WORD_ORDER_SEED, buildOrderIndex } from '../lib/wordOrder'
 import { todayStamp } from '../lib/srs'
 import { buildTodayBatch } from '../lib/studyBatch'
+import { onControl, sendControl, useControlAvailable } from '../control/remote'
 
 type Mode = 'flashcard' | 'quiz'
 
@@ -23,6 +24,9 @@ export default function WordStudy() {
   const [finished, setFinished] = useState(false)
   // 遮罩单词：正面只显示中文释义，翻面才显示英文（回忆拼写用）
   const [maskWord, setMaskWord] = useState(false)
+  // 手机遥控模式：本机静音，点认识/模糊/不认识时把指令发给电脑
+  const [remoteOn, setRemoteOn] = useState(false)
+  const controlReady = useControlAvailable()
 
   const states = useSrsStore(s => s.states)
   const review = useSrsStore(s => s.review)
@@ -85,12 +89,25 @@ export default function WordStudy() {
   const current = queue[idx]
 
   // 自动朗读：闪卡模式下每出现一张新卡片（含进入学习的第一张）自动发音一遍。
-  // 自测模式与「遮罩单词」不自动读，避免听力剧透答案/拼写。
+  // 自测模式、遮罩单词、手机遥控（本机静音）时不自动读。
   useEffect(() => {
-    if (mode === 'flashcard' && !maskWord && current) {
+    if (mode === 'flashcard' && !maskWord && !remoteOn && current) {
       void speak(current.spelling)
     }
-  }, [current?.id, mode, maskWord]) // eslint-disable-line
+  }, [current?.id, mode, maskWord, remoteOn]) // eslint-disable-line
+
+  // 电脑端（显示端）：接收手机遥控指令，执行同样的复习并翻卡。
+  // 遥控模式（本机为手机控制器）时不接收，避免双重操作。
+  useEffect(() => {
+    if (!controlReady || remoteOn) return
+    return onControl(msg => {
+      if (msg.type !== 'grade' || !msg.wordId) return
+      void review(msg.wordId, msg.correct ?? true).then(() => {
+        // 与当前卡片一致时翻卡，电脑界面随之变化（并触发自动朗读）
+        if (current?.id === msg.wordId) next()
+      })
+    })
+  }, [controlReady, remoteOn, current?.id, review]) // eslint-disable-line
 
   // 自测选项缓存（保证与显示一致）
   const [optionsCache, setOptionsCache] = useState<Word[]>([])
@@ -116,6 +133,8 @@ export default function WordStudy() {
   const grade = async (correct: boolean) => {
     if (!current) return
     await review(current.id, correct)
+    // 手机遥控：把指令发给电脑，电脑执行同样操作并翻卡朗读
+    if (remoteOn) void sendControl({ type: 'grade', wordId: current.id, correct })
     if (correct) setSessionCorrect(c => c + 1)
     setDoneCount(c => c + 1)
     next()
@@ -182,11 +201,27 @@ export default function WordStudy() {
 
   if (!current) return null
 
+  // 手机遥控开关（仅局域网服务器可达时显示）
+  const remoteBar = controlReady ? (
+    <div className={`flex items-center justify-between gap-3 border rounded-lg px-3 py-2 text-sm ${remoteOn ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-slate-200'}`}>
+      <span className="text-slate-600">
+        {remoteOn
+          ? '📱 遥控模式：本机静音，点「认识/模糊/不认识」会同步操作电脑（电脑端请保持此页打开）'
+          : '📡 已连接局域网，可开启手机遥控'}
+      </span>
+      <button
+        onClick={() => setRemoteOn(o => !o)}
+        className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium ${remoteOn ? 'bg-amber-500 text-white' : 'bg-blue-600 text-white'}`}
+      >{remoteOn ? '关闭遥控' : '开启遥控'}</button>
+    </div>
+  ) : null
+
   // ---- 自测模式（看中文选英文） ----
   if (mode === 'quiz') {
     return (
       <div className="space-y-4">
         <h1 className="text-2xl font-bold">单词自测</h1>
+        {remoteBar}
         <div className="flex items-center justify-between text-sm text-slate-500">
           <span>{progressLabel}{dueCount > 0 ? ` · 复习 ${dueCount} 个到期` : ''}</span>
           <button onClick={() => setMode('flashcard')} className="text-blue-600">切到闪卡模式</button>
@@ -227,6 +262,7 @@ export default function WordStudy() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">闪卡学习</h1>
+      {remoteBar}
       <div className="flex items-center justify-between text-sm text-slate-500">
         <span>{progressLabel}{dueCount > 0 ? ` · 复习 ${dueCount} 个到期` : ''}</span>
         <div className="flex items-center gap-3">

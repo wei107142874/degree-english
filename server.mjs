@@ -209,6 +209,20 @@ function serveStatic(req, res, rawPath) {
   });
 }
 
+// ---------- 实时控制通道（手机遥控电脑背单词） ----------
+// 手机点「认识/模糊/不认识」→ POST /api/control/send → 服务器把指令
+// 广播给所有 SSE 客户端（电脑端收到后执行复习并翻卡）。
+const controlClients = new Set();
+
+function broadcastControl(msg) {
+  const data = JSON.stringify(msg);
+  for (const res of controlClients) {
+    try {
+      res.write(`data: ${data}\n\n`);
+    } catch { /* 客户端已断开，忽略 */ }
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
@@ -290,6 +304,43 @@ const server = http.createServer(async (req, res) => {
       console.error('[同步] 处理失败:', e);
       return sendJson(res, 500, { ok: false, error: '服务器内部错误' });
     }
+  }
+
+  // ---- 实时控制通道（手机遥控电脑） ----
+  if (pathname.startsWith('/api/control/')) {
+    if (pathname === '/api/control/send' && req.method === 'POST') {
+      let body;
+      try {
+        body = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        return sendJson(res, 400, { ok: false, error: '请求格式错误' });
+      }
+      const deviceId = String(body.deviceId || 'unknown');
+      broadcastControl({ ...body, deviceId });
+      console.log(`[遥控] ${new Date().toLocaleTimeString()} ${deviceId.slice(0, 8)} 指令: ${body.type || '?'}`);
+      return sendJson(res, 200, { ok: true, relayed: controlClients.size });
+    }
+
+    if (pathname === '/api/control/events' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.write(': connected\n\n');
+      controlClients.add(res);
+      const ping = setInterval(() => {
+        try { res.write(': ping\n\n'); } catch { /* 客户端已断开 */ }
+      }, 25000);
+      req.on('close', () => {
+        clearInterval(ping);
+        controlClients.delete(res);
+      });
+      return; // SSE 长连接，不结束响应
+    }
+
+    return sendJson(res, 404, { ok: false, error: '接口不存在' });
   }
 
   // ---- 静态文件（应用本体）----
