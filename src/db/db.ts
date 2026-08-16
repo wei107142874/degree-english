@@ -66,10 +66,12 @@ export function stamp<T extends { updatedAt?: number }>(record: T): T {
   return { ...record, updatedAt: now() };
 }
 
-/** 写入一条记录，自动带上 updatedAt（保留已有的，不覆盖） */
+/** 写入一条记录，自动盖上「当前」修改时间戳（局域网同步按最新者胜合并）。
+ *  注意：必须每次写入都刷新 updatedAt —— 若保留旧值，同步端会因
+ *  时间戳 ≤ 上次同步时间而认为没有新改动，导致后续修改不再上传。 */
 export async function putRecord<T extends { updatedAt?: number }>(store: string, record: T) {
   const db = await getDb();
-  await db.put(store, record.updatedAt ? record : stamp(record));
+  await db.put(store, stamp(record));
 }
 
 // 导出全部用户数据（备份）
