@@ -14,10 +14,10 @@ export function findWord(id: string): Word | undefined {
   return ALL_WORDS.find(w => w.id === id);
 }
 
-export function searchWords(q: string, tier: number | null): Word[] {
+export function searchWords(q: string, tier: number | null, words: Word[] = ALL_WORDS): Word[] {
   const s = q.trim().toLowerCase();
-  if (!s && !tier) return ALL_WORDS;
-  return ALL_WORDS.filter(w => {
+  if (!s && !tier) return words;
+  return words.filter(w => {
     if (tier && w.tier !== tier) return false;
     if (!s) return true;
     return (

@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ALL_WORDS, TIER_LABELS, searchWords } from '../data/words'
 import { useSrsStore } from '../store/useSrsStore'
+import { useSettingsStore } from '../store/useSettingsStore'
+import { WORD_ORDER_SEED, buildOrderIndex } from '../lib/wordOrder'
 import { Card, ProgressBar, speak } from '../components/common'
 
 const PAGE_SIZE = 100
@@ -12,15 +14,22 @@ export default function Words() {
   const [learnedFilter, setLearnedFilter] = useState<'all' | 'new' | 'learned'>('all')
   const [page, setPage] = useState(0)
   const states = useSrsStore(s => s.states)
+  const settings = useSettingsStore(s => s.settings)
+
+  // 列表顺序与「开始学习」一致：同一个固定随机词序（同一种子）
+  const orderedWords = useMemo(() => {
+    const idx = buildOrderIndex(ALL_WORDS, settings.wordOrderSeed ?? WORD_ORDER_SEED)
+    return [...ALL_WORDS].sort((a, b) => (idx.get(a.id) ?? 0) - (idx.get(b.id) ?? 0))
+  }, [settings.wordOrderSeed])
 
   const results = useMemo(() => {
-    const base = searchWords(q, tier)
+    const base = searchWords(q, tier, orderedWords)
     if (learnedFilter === 'all') return base
     return base.filter(w => {
       const lv = states[w.id]?.level ?? 0
       return learnedFilter === 'learned' ? lv >= 1 : lv === 0
     })
-  }, [q, tier, learnedFilter, states])
+  }, [q, tier, learnedFilter, states, orderedWords])
   const pageItems = results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
   const learned = Object.values(states).filter(s => s.level >= 1).length
   const totalPages = Math.max(1, Math.ceil(results.length / PAGE_SIZE))
