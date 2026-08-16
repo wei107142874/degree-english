@@ -15,8 +15,9 @@ export default function Words() {
   const [tier, setTier] = useState<number | null>(null)
   const [learnedFilter, setLearnedFilter] = useState<'all' | 'new' | 'learned'>('all')
   const [page, setPage] = useState(0)
-  // 遮罩模式：隐藏释义，单击显示/再单击隐藏
-  const [masked, setMasked] = useState(false)
+  // 遮罩模式：maskMean=遮住释义留单词；maskWord=遮住单词留释义。单击显示/再单击隐藏
+  const [maskMean, setMaskMean] = useState(false)
+  const [maskWord, setMaskWord] = useState(false)
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
   // 已学分组折叠状态
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -92,17 +93,25 @@ export default function Words() {
     const st = states[w.id]
     const cc = st ? Math.max(0, st.reviewCount - st.wrongCount) : 0
     const lv = badgeLevel(cc)
-    const show = !masked || revealed.has(w.id)
+    const anyMask = maskMean || maskWord
+    const showWord = !maskWord || revealed.has(w.id)
+    const showMean = !maskMean || revealed.has(w.id)
     return (
       <li
         key={w.id}
-        onClick={() => { if (masked) toggleReveal(w.id) }}
-        className={`flex items-center gap-3 px-4 py-3 hover:bg-slate-50 ${masked ? 'cursor-pointer' : ''}`}
+        onClick={() => { if (anyMask) toggleReveal(w.id) }}
+        className={`flex items-center gap-3 px-4 py-3 hover:bg-slate-50 ${anyMask ? 'cursor-pointer' : ''}`}
       >
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-800">{w.spelling}</span>
-            {w.phonetic && <span className="text-xs text-slate-400">{w.phonetic}</span>}
+            {showWord ? (
+              <>
+                <span className="font-semibold text-slate-800">{w.spelling}</span>
+                {w.phonetic && <span className="text-xs text-slate-400">{w.phonetic}</span>}
+              </>
+            ) : (
+              <span className="text-sm text-slate-300 select-none">🔒 点击显示单词</span>
+            )}
             {w.pos && <span className="text-xs text-blue-500">{w.pos}</span>}
             <span className={`text-[10px] px-1.5 py-0.5 rounded ${
               w.tier === 1 ? 'bg-red-100 text-red-600' : w.tier === 2 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-500'
@@ -114,7 +123,7 @@ export default function Words() {
               >已学{lv >= 1 ? ` Lv${lv}` : ''}</span>
             )}
           </div>
-          {show ? (
+          {showMean ? (
             <div className="text-sm text-slate-500 truncate">{w.meanings.join('；')}</div>
           ) : (
             <div className="text-sm text-slate-300 truncate select-none">🔒 点击显示释义</div>
@@ -181,12 +190,19 @@ export default function Words() {
         ))}
         <span className="mx-1 text-slate-200">|</span>
         <button
-          onClick={() => { setMasked(m => !m); setRevealed(new Set()) }}
+          onClick={() => { setMaskMean(m => !m); setRevealed(new Set()) }}
           className={`px-3 py-2 rounded-lg text-sm ${
-            masked ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
+            maskMean ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
           }`}
-          title="开启后释义隐藏，单击单词显示"
-        >{masked ? '👁 显示释义' : '🔒 遮罩释义'}</button>
+          title="开启后释义隐藏，只留英文单词，单击显示释义"
+        >{maskMean ? '👁 显示释义' : '🔒 遮罩释义'}</button>
+        <button
+          onClick={() => { setMaskWord(m => !m); setRevealed(new Set()) }}
+          className={`px-3 py-2 rounded-lg text-sm ${
+            maskWord ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
+          }`}
+          title="开启后英文单词隐藏，只留中文释义，单击显示单词"
+        >{maskWord ? '👁 显示单词' : '🔒 遮罩单词'}</button>
       </div>
 
       {learnedFilter === 'learned' && groups.length > 0 ? (
