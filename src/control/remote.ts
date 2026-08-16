@@ -1,23 +1,52 @@
 // ============================================================
 // 手机遥控电脑背单词（实时控制通道）
 // ------------------------------------------------------------
-// 复用局域网同步服务器：手机 POST /api/control/send 发指令，
+// 复用局域网同步服务器：手机 POST /api/control/send 发消息，
 // 服务器通过 SSE（/api/control/events）广播给所有连接端。
-// 手机端开启「遥控模式」后：点认识/模糊/不认识 → 本机不发声，
-// 指令转发到电脑端，电脑执行同样的复习并自动翻卡 + 朗读。
+//
+// 角色：
+//   - 电脑端（显示端，默认）：本机正常学习；收到手机指令后执行
+//     并广播完整会话状态（当前词/翻面/模式/遮罩/自测选项/进度）。
+//   - 手机端（遥控端，开启遥控后）：只显示电脑广播的状态、只发
+//     指令，本机静音、不写本地数据。所有操作（认识/模糊/不认识、
+//     翻面、切模式、遮罩、自测答题、朗读）都实时同步到电脑。
+//
 // 仅当页面由局域网服务器提供（location.origin 可连 /api/control/*）时可用。
 // ============================================================
 
 import { useEffect, useState } from 'react'
 import { getDeviceId, getSyncStatus, onSyncStatus } from '../sync/client'
 
-export interface ControlMsg {
-  deviceId: string
-  type: 'grade' | 'ping'
-  wordId?: string
-  correct?: boolean
-  ts?: number
+/** 电脑端广播的完整会话状态（手机端照此渲染） */
+export interface RemoteState {
+  mode: 'flashcard' | 'quiz'
+  wordId: string
+  flipped: boolean
+  maskWord: boolean
+  idx: number           // 第几张（从 1 起）
+  total: number
+  quizOptions: string[] // 自测模式的 4 个选项（单词 id）
+  quizChoice: number | null
+  quizCorrectIdx: number // 作答前为 -1（不泄露答案）；作答后为正确项下标
+  finished: boolean
+  doneCount: number
+  sessionCorrect: number
+  progress: string
 }
+
+export type ControlPayload =
+  | { type: 'state'; state: RemoteState }
+  | {
+      type: 'cmd'
+      action: 'grade' | 'flip' | 'mode' | 'mask' | 'quiz' | 'speak' | 'hello'
+      wordId?: string
+      correct?: boolean
+      mode?: 'flashcard' | 'quiz'
+      on?: boolean
+      choice?: number
+    }
+
+export type ControlMsg = { deviceId: string } & ControlPayload
 
 type Listener = (msg: ControlMsg) => void
 
@@ -33,7 +62,7 @@ function ensureStream() {
     es.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data as string) as ControlMsg
-        // 忽略自己发出的指令（避免手机收到自己的回显）
+        // 忽略自己发出的消息（避免收到自己的回显）
         if (!msg || !msg.type || msg.deviceId === getDeviceId()) return
         const copy = { ...msg }
         listeners.forEach(l => { try { l(copy) } catch { /* 忽略 */ } })
@@ -50,8 +79,8 @@ export function onControl(cb: Listener): () => void {
   return () => { listeners.delete(cb) }
 }
 
-/** 发送一条控制指令（手机遥控用），返回是否送达服务器 */
-export async function sendControl(msg: Omit<ControlMsg, 'deviceId'>): Promise<boolean> {
+/** 发送一条控制消息，返回是否送达服务器 */
+export async function sendControl(msg: ControlPayload): Promise<boolean> {
   try {
     const res = await fetch(location.origin + '/api/control/send', {
       method: 'POST',

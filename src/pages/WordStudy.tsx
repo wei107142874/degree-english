@@ -9,6 +9,7 @@ import { WORD_ORDER_SEED, buildOrderIndex } from '../lib/wordOrder'
 import { todayStamp } from '../lib/srs'
 import { buildTodayBatch } from '../lib/studyBatch'
 import { onControl, sendControl, useControlAvailable } from '../control/remote'
+import type { ControlPayload, RemoteState } from '../control/remote'
 
 type Mode = 'flashcard' | 'quiz'
 
@@ -26,6 +27,7 @@ export default function WordStudy() {
   const [maskWord, setMaskWord] = useState(false)
   // 手机遥控模式：本机静音，点认识/模糊/不认识时把指令发给电脑
   const [remoteOn, setRemoteOn] = useState(false)
+  const [remoteState, setRemoteState] = useState<RemoteState | null>(null)
   const controlReady = useControlAvailable()
 
   const states = useSrsStore(s => s.states)
@@ -96,19 +98,6 @@ export default function WordStudy() {
     }
   }, [current?.id, mode, maskWord, remoteOn]) // eslint-disable-line
 
-  // 电脑端（显示端）：接收手机遥控指令，执行同样的复习并翻卡。
-  // 遥控模式（本机为手机控制器）时不接收，避免双重操作。
-  useEffect(() => {
-    if (!controlReady || remoteOn) return
-    return onControl(msg => {
-      if (msg.type !== 'grade' || !msg.wordId) return
-      void review(msg.wordId, msg.correct ?? true).then(() => {
-        // 与当前卡片一致时翻卡，电脑界面随之变化（并触发自动朗读）
-        if (current?.id === msg.wordId) next()
-      })
-    })
-  }, [controlReady, remoteOn, current?.id, review]) // eslint-disable-line
-
   // 自测选项缓存（保证与显示一致）
   const [optionsCache, setOptionsCache] = useState<Word[]>([])
   useEffect(() => {
@@ -129,12 +118,11 @@ export default function WordStudy() {
     setFlipped(false)
   }
 
-  // 闪卡：认识/模糊/不认识（模糊也记对，但间隔更短由 SRS 等级控制）
+  // 闪卡：认识/模糊/不认识（模糊也记对，但间隔更短由 SRS 等级控制）。
+  // 遥控模式下的按钮走独立的遥控界面（见下方 remoteOn 分支），本函数只服务本机操作。
   const grade = async (correct: boolean) => {
     if (!current) return
     await review(current.id, correct)
-    // 手机遥控：把指令发给电脑，电脑执行同样操作并翻卡朗读
-    if (remoteOn) void sendControl({ type: 'grade', wordId: current.id, correct })
     if (correct) setSessionCorrect(c => c + 1)
     setDoneCount(c => c + 1)
     next()
@@ -151,12 +139,222 @@ export default function WordStudy() {
     setTimeout(() => { setQuizChoice(null); next() }, 900)
   }
 
+  // ---- 手机遥控：完整会话状态镜像 ----
+  // 电脑端（显示端）把完整状态广播给手机：当前词/翻面/模式/遮罩/自测选项/进度。
+  // 状态每次变化都发一次，另每 5 秒心跳兜底，防止漏包导致两边不一致。
+  const broadcastState = () => {
+    if (!current) return
+    void sendControl({
+      type: 'state',
+      state: {
+        mode,
+        wordId: current.id,
+        flipped,
+        maskWord,
+        idx: idx + 1,
+        total: queue.length,
+        quizOptions: optionsCache.map(o => o.id),
+        quizChoice,
+        quizCorrectIdx: quizChoice !== null ? correctIdx : -1, // 作答前不泄露答案
+        finished,
+        doneCount,
+        sessionCorrect,
+        progress: progressLabel + (dueCount > 0 ? ` · 复习 ${dueCount} 个到期` : ''),
+      },
+    })
+  }
+
+  useEffect(() => {
+    if (!controlReady || remoteOn || !current) return
+    broadcastState()
+    const t = setInterval(broadcastState, 5000)
+    return () => clearInterval(t)
+  }, [controlReady, remoteOn, current?.id, mode, flipped, maskWord, idx, queue.length, quizChoice, correctIdx, optionsCache, finished, doneCount, sessionCorrect, progressLabel, dueCount]) // eslint-disable-line
+
+  // 电脑端：接收手机指令并执行（本机为遥控端时不接收，避免双重操作）
+  useEffect(() => {
+    if (!controlReady || remoteOn) return
+    return onControl(msg => {
+      if (msg.type !== 'cmd') return
+      switch (msg.action) {
+        case 'grade':
+          if (current && msg.wordId === current.id) void grade(msg.correct ?? true)
+          break
+        case 'flip':
+          setFlipped(f => !f)
+          break
+        case 'mode':
+          if (msg.mode === 'flashcard' || msg.mode === 'quiz') setMode(msg.mode)
+          break
+        case 'mask':
+          setMaskWord(!!msg.on)
+          break
+        case 'quiz':
+          if (msg.choice != null && quizChoice === null && current) void answerQuiz(msg.choice)
+          break
+        case 'speak':
+          if (current) void speak(current.spelling)
+          break
+        case 'hello':
+          broadcastState()
+          break
+      }
+    })
+  }, [controlReady, remoteOn, current?.id, quizChoice]) // eslint-disable-line
+
+  // 手机端（遥控端）：接收电脑广播的会话状态照此渲染
+  useEffect(() => {
+    if (!controlReady || !remoteOn) return
+    return onControl(msg => {
+      if (msg.type === 'state' && msg.state) setRemoteState(msg.state)
+    })
+  }, [controlReady, remoteOn])
+
+  // 开启遥控时请求电脑当前状态；电脑没开背单词页则手机显示等待
+  useEffect(() => {
+    if (controlReady && remoteOn) {
+      setRemoteState(null)
+      void sendControl({ type: 'cmd', action: 'hello' })
+    }
+  }, [controlReady, remoteOn])
+
   if (!srsLoaded || !settingsLoaded) {
     return (
       <div className="space-y-4">
         <h1 className="text-2xl font-bold">开始学习</h1>
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">
           <p className="text-slate-500">正在加载学习数据…</p>
+        </div>
+      </div>
+    )
+  }
+
+  // ---- 手机遥控端：只显示电脑广播的状态，本机只发指令、不发声 ----
+  if (remoteOn) {
+    const rs = remoteState
+    const rw = rs ? ALL_WORDS.find(w => w.id === rs.wordId) : undefined
+    const send = (m: ControlPayload) => void sendControl(m)
+
+    if (!rs || !rw || rs.finished) {
+      return (
+        <div className="space-y-4">
+          <h1 className="text-2xl font-bold">📱 手机遥控</h1>
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center space-y-4">
+            <p className="text-slate-500 whitespace-pre-line">
+              {rs?.finished
+                ? '本次学习已完成 🎉'
+                : '等待电脑端响应…\n请确认：电脑已打开「开始学习」页，且手机与电脑都通过同一局域网服务器地址访问。'}
+            </p>
+            <button onClick={() => setRemoteOn(false)} className="bg-slate-600 text-white px-4 py-2 rounded-lg text-sm">关闭遥控</button>
+          </div>
+        </div>
+      )
+    }
+
+    // 自测模式：选项由电脑广播，答题结果也来自电脑
+    if (rs.mode === 'quiz') {
+      return (
+        <div className="space-y-4">
+          <h1 className="text-2xl font-bold">📱 手机遥控 · 自测</h1>
+          <div className="text-sm text-slate-500">{rs.progress}</div>
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">
+            <div className="text-2xl font-bold mb-6">{rw.meanings.join('；')}</div>
+            <div className="grid gap-3">
+              {rs.quizOptions.map((id, i) => {
+                const opt = ALL_WORDS.find(w => w.id === id)
+                if (!opt) return null
+                const answered = rs.quizChoice !== null
+                return (
+                  <button
+                    key={id}
+                    onClick={() => { if (!answered) send({ type: 'cmd', action: 'quiz', choice: i }) }}
+                    className={`px-4 py-3 rounded-lg border text-left font-medium transition ${
+                      !answered
+                        ? 'border-slate-300 hover:border-blue-500 hover:bg-blue-50'
+                        : i === rs.quizCorrectIdx
+                          ? 'border-green-500 bg-green-50 text-green-700'
+                          : rs.quizChoice === i
+                            ? 'border-red-500 bg-red-50 text-red-600'
+                            : 'border-slate-200 opacity-60'
+                    }`}
+                  >
+                    {opt.spelling} {opt.phonetic && <span className="text-xs text-slate-400 ml-2">{opt.phonetic}</span>}
+                  </button>
+                )
+              })}
+            </div>
+            {rs.quizChoice !== null && (
+              <div className="mt-4 text-sm text-slate-500">
+                {rs.quizChoice === rs.quizCorrectIdx ? '✅ 回答正确' : '❌ 正确答案：' + rw.spelling}
+              </div>
+            )}
+          </div>
+          <button onClick={() => send({ type: 'cmd', action: 'mode', mode: 'flashcard' })} className="w-full border border-slate-300 py-2.5 rounded-lg text-sm text-slate-600">切到闪卡模式</button>
+        </div>
+      )
+    }
+
+    // 闪卡模式：卡片/翻面/遮罩状态与电脑完全一致
+    return (
+      <div className="space-y-4">
+        <h1 className="text-2xl font-bold">📱 手机遥控</h1>
+        <div className="text-sm text-slate-500">{rs.progress}</div>
+
+        <div className="flip-card h-72 cursor-pointer select-none" onClick={() => send({ type: 'cmd', action: 'flip' })}>
+          <div className={`flip-inner h-full ${rs.flipped ? 'flipped' : ''}`}>
+            <div className="flip-face h-full bg-white rounded-2xl shadow-md border border-slate-200 flex flex-col items-center justify-center p-6">
+              {rs.maskWord ? (
+                <>
+                  <div className="text-sm text-slate-500 mb-2">{rw.pos ?? ''}</div>
+                  <div className="text-2xl font-semibold text-blue-900 text-center leading-relaxed">{rw.meanings.join('；')}</div>
+                  <div className="absolute bottom-4 text-xs text-slate-300">点击翻面查看单词</div>
+                </>
+              ) : (
+                <>
+                  <div className="text-4xl font-bold text-slate-800">{rw.spelling}</div>
+                  {rw.phonetic && <div className="text-slate-400 mt-2">{rw.phonetic}</div>}
+                  <div className="absolute bottom-4 text-xs text-slate-300">点击翻面查看释义</div>
+                </>
+              )}
+            </div>
+            <div className="flip-back h-full bg-blue-50 rounded-2xl shadow-md border border-blue-200 flex flex-col items-center justify-center p-6 gap-2">
+              {rs.maskWord ? (
+                <>
+                  <div className="text-4xl font-bold text-slate-800">{rw.spelling}</div>
+                  {rw.phonetic && <div className="text-slate-400 mt-2">{rw.phonetic}</div>}
+                  {rw.examples[0] && (
+                    <div className="mt-2 text-sm text-slate-600 text-center">
+                      <div>{rw.examples[0].en}</div>
+                      <div className="text-slate-400 mt-1">{rw.examples[0].zh}</div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="text-sm text-slate-500">{rw.pos ?? ''} {rw.phonetic ?? ''}</div>
+                  <div className="text-xl font-semibold text-blue-900">{rw.meanings.join('；')}</div>
+                  {rw.examples[0] && (
+                    <div className="mt-2 text-sm text-slate-600 text-center">
+                      <div>{rw.examples[0].en}</div>
+                      <div className="text-slate-400 mt-1">{rw.examples[0].zh}</div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <button onClick={() => send({ type: 'cmd', action: 'speak' })} className="flex-1 border border-slate-300 py-2.5 rounded-lg text-sm text-slate-600">🔊 电脑朗读</button>
+          <button onClick={() => send({ type: 'cmd', action: 'mask', on: !rs.maskWord })} className="flex-1 border border-slate-300 py-2.5 rounded-lg text-sm text-slate-600">{rs.maskWord ? '👁 单词' : '🔒 单词'}</button>
+          <button onClick={() => send({ type: 'cmd', action: 'mode', mode: 'quiz' })} className="flex-1 border border-slate-300 py-2.5 rounded-lg text-sm text-slate-600">切到自测</button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <button onClick={() => send({ type: 'cmd', action: 'grade', wordId: rw.id, correct: false })} className="bg-red-500 hover:bg-red-600 text-white py-3 rounded-xl font-medium">不认识</button>
+          <button onClick={() => send({ type: 'cmd', action: 'grade', wordId: rw.id, correct: true })} className="bg-amber-500 hover:bg-amber-600 text-white py-3 rounded-xl font-medium">模糊</button>
+          <button onClick={() => send({ type: 'cmd', action: 'grade', wordId: rw.id, correct: true })} className="bg-green-600 hover:bg-green-700 text-white py-3 rounded-xl font-medium">认识</button>
         </div>
       </div>
     )
