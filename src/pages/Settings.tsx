@@ -6,6 +6,7 @@ import { usePlanStore } from '../store/usePlanStore'
 import { exportAll, importAll } from '../db/db'
 import { DEFAULT_SECTION_CONFIG } from '../lib/examConfig'
 import { Card, speak } from '../components/common'
+import LearningGuide from '../components/LearningGuide'
 import { engineStatus } from '../lib/speech'
 
 export default function Settings() {
@@ -74,6 +75,8 @@ export default function Settings() {
         </div>
         <button onClick={save} className="mt-3 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm">保存设置</button>
       </Card>
+
+      <LearningGuide />
 
       <Card>
         <h2 className="font-bold text-slate-800 mb-2">题型分值配置</h2>
