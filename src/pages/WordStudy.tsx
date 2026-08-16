@@ -21,6 +21,8 @@ export default function WordStudy() {
   const [doneCount, setDoneCount] = useState(0)
   const [sessionCorrect, setSessionCorrect] = useState(0)
   const [finished, setFinished] = useState(false)
+  // 遮罩单词：正面只显示中文释义，翻面才显示英文（回忆拼写用）
+  const [maskWord, setMaskWord] = useState(false)
 
   const states = useSrsStore(s => s.states)
   const review = useSrsStore(s => s.review)
@@ -83,12 +85,12 @@ export default function WordStudy() {
   const current = queue[idx]
 
   // 自动朗读：闪卡模式下每出现一张新卡片（含进入学习的第一张）自动发音一遍。
-  // 自测模式不自动读，避免听力剧透答案。
+  // 自测模式与「遮罩单词」不自动读，避免听力剧透答案/拼写。
   useEffect(() => {
-    if (mode === 'flashcard' && current) {
+    if (mode === 'flashcard' && !maskWord && current) {
       void speak(current.spelling)
     }
-  }, [current?.id, mode]) // eslint-disable-line
+  }, [current?.id, mode, maskWord]) // eslint-disable-line
 
   // 自测选项缓存（保证与显示一致）
   const [optionsCache, setOptionsCache] = useState<Word[]>([])
@@ -227,24 +229,56 @@ export default function WordStudy() {
       <h1 className="text-2xl font-bold">闪卡学习</h1>
       <div className="flex items-center justify-between text-sm text-slate-500">
         <span>{progressLabel}{dueCount > 0 ? ` · 复习 ${dueCount} 个到期` : ''}</span>
-        <button onClick={() => setMode('quiz')} className="text-blue-600">切到自测模式</button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => { setMaskWord(m => !m); setFlipped(false) }}
+            className={maskWord ? 'text-amber-600 font-medium' : 'text-blue-600'}
+            title="遮罩单词：正面只显示中文释义，翻面才显示英文单词"
+          >{maskWord ? '👁 显示单词' : '🔒 遮罩单词'}</button>
+          <button onClick={() => setMode('quiz')} className="text-blue-600">切到自测模式</button>
+        </div>
       </div>
 
       <div className="flip-card h-72 cursor-pointer select-none" onClick={() => setFlipped(f => !f)}>
         <div className={`flip-inner h-full ${flipped ? 'flipped' : ''}`}>
           <div className="flip-face h-full bg-white rounded-2xl shadow-md border border-slate-200 flex flex-col items-center justify-center p-6">
-            <div className="text-4xl font-bold text-slate-800">{current.spelling}</div>
-            {current.phonetic && <div className="text-slate-400 mt-2">{current.phonetic}</div>}
-            <div className="absolute bottom-4 text-xs text-slate-300">点击翻面查看释义</div>
+            {maskWord ? (
+              <>
+                <div className="text-sm text-slate-500 mb-2">{current.pos ?? ''}</div>
+                <div className="text-2xl font-semibold text-blue-900 text-center leading-relaxed">{current.meanings.join('；')}</div>
+                <div className="absolute bottom-4 text-xs text-slate-300">点击翻面查看单词</div>
+              </>
+            ) : (
+              <>
+                <div className="text-4xl font-bold text-slate-800">{current.spelling}</div>
+                {current.phonetic && <div className="text-slate-400 mt-2">{current.phonetic}</div>}
+                <div className="absolute bottom-4 text-xs text-slate-300">点击翻面查看释义</div>
+              </>
+            )}
           </div>
           <div className="flip-back h-full bg-blue-50 rounded-2xl shadow-md border border-blue-200 flex flex-col items-center justify-center p-6 gap-2">
-            <div className="text-sm text-slate-500">{current.pos ?? ''} {current.phonetic ?? ''}</div>
-            <div className="text-xl font-semibold text-blue-900">{current.meanings.join('；')}</div>
-            {current.examples[0] && (
-              <div className="mt-2 text-sm text-slate-600 text-center">
-                <div>{current.examples[0].en}</div>
-                <div className="text-slate-400 mt-1">{current.examples[0].zh}</div>
-              </div>
+            {maskWord ? (
+              <>
+                <div className="text-4xl font-bold text-slate-800">{current.spelling}</div>
+                {current.phonetic && <div className="text-slate-400 mt-2">{current.phonetic}</div>}
+                {current.examples[0] && (
+                  <div className="mt-2 text-sm text-slate-600 text-center">
+                    <div>{current.examples[0].en}</div>
+                    <div className="text-slate-400 mt-1">{current.examples[0].zh}</div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="text-sm text-slate-500">{current.pos ?? ''} {current.phonetic ?? ''}</div>
+                <div className="text-xl font-semibold text-blue-900">{current.meanings.join('；')}</div>
+                {current.examples[0] && (
+                  <div className="mt-2 text-sm text-slate-600 text-center">
+                    <div>{current.examples[0].en}</div>
+                    <div className="text-slate-400 mt-1">{current.examples[0].zh}</div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
