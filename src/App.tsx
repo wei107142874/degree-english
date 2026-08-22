@@ -34,12 +34,6 @@ export default function App() {
     loadSettings()
     // 局域网同步：探测服务器并自动双向同步（由 server.mjs 提供）
     initSync()
-    // PWA service worker 由 vite-plugin-pwa 自动注册（dev 模式下不注册）
-    if (import.meta.env.PROD && 'serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register(import.meta.env.BASE_URL + 'sw.js').catch(() => {})
-      })
-    }
   }, [loadSrs, loadAttempts, loadPlan, loadSettings])
 
   return (
