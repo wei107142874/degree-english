@@ -4,6 +4,7 @@ import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Words from './pages/Words'
 import WordStudy from './pages/WordStudy'
+import ReviewSession from './pages/ReviewSession'
 import Grammar from './pages/Grammar'
 import GrammarLesson from './pages/GrammarLesson'
 import Practice from './pages/Practice'
@@ -47,6 +48,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/words" element={<Words />} />
         <Route path="/study" element={<WordStudy />} />
+        <Route path="/review" element={<ReviewSession />} />
         <Route path="/grammar" element={<Grammar />} />
         <Route path="/grammar/:id" element={<GrammarLesson />} />
         <Route path="/practice" element={<Practice />} />

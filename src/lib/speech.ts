@@ -19,6 +19,38 @@ function loadVoices() {
 }
 loadVoices()
 
+/**
+ * 首次用户交互时解锁音频播放权限。
+ * 手机遥控场景下，电脑端可能长时间没有新的点击/触摸手势，浏览器会拦截
+ * 后台触发的 Audio.play()/speechSynthesis（自动播放策略），导致“电脑朗读”无声。
+ * 这里在任意一次真实手势（点击/触摸/按键）时预热音频，之后即可正常发声。
+ */
+function primeAudio() {
+  if (typeof window === 'undefined') return
+  const unlock = () => {
+    try {
+      const a = new Audio()
+      a.muted = true
+      a.volume = 0
+      void a.play().catch(() => {})
+    } catch { /* 忽略 */ }
+    try {
+      if ('speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance('')
+        u.volume = 0
+        window.speechSynthesis.speak(u)
+      }
+    } catch { /* 忽略 */ }
+    window.removeEventListener('pointerdown', unlock)
+    window.removeEventListener('touchstart', unlock)
+    window.removeEventListener('keydown', unlock)
+  }
+  window.addEventListener('pointerdown', unlock, { once: true })
+  window.addEventListener('touchstart', unlock, { once: true })
+  window.addEventListener('keydown', unlock, { once: true })
+}
+primeAudio()
+
 /** 本地是否有英语语音可用 */
 export function hasLocalEnglishVoice(): boolean {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return false

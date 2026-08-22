@@ -5,7 +5,7 @@ import type { Word } from '../types'
 import { useSrsStore } from '../store/useSrsStore'
 import { useSettingsStore } from '../store/useSettingsStore'
 import { WORD_ORDER_SEED, buildOrderIndex } from '../lib/wordOrder'
-import { badgeLevel, dateOfTs, todayStamp } from '../lib/srs'
+import { badgeLevel, dateOfTs, todayStamp, countReviewedToday } from '../lib/srs'
 import { Card, ProgressBar, speak } from '../components/common'
 
 const PAGE_SIZE = 100
@@ -22,6 +22,7 @@ export default function Words() {
   // 已学分组折叠状态
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const states = useSrsStore(s => s.states)
+  const toggleMark = useSrsStore(s => s.toggleMark)
   const settings = useSettingsStore(s => s.settings)
 
   // 列表顺序与「开始学习」一致：同一个固定随机词序（同一种子）
@@ -40,6 +41,8 @@ export default function Words() {
   }, [q, tier, learnedFilter, states, orderedWords])
   const pageItems = results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
   const learned = Object.values(states).filter(s => s.level >= 1).length
+  const markedCount = Object.values(states).filter(s => s.marked).length
+  const reviewedToday = countReviewedToday(Object.values(states), todayStamp())
   const totalPages = Math.max(1, Math.ceil(results.length / PAGE_SIZE))
 
   // 已学单词按学习日期分组（今天/昨天/M月D日/更早），类似百词斩
@@ -103,7 +106,7 @@ export default function Words() {
         className={`flex items-center gap-3 px-4 py-3 hover:bg-slate-50 ${anyMask ? 'cursor-pointer' : ''}`}
       >
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {showWord ? (
               <>
                 <span className="font-semibold text-slate-800">{w.spelling}</span>
@@ -129,11 +132,22 @@ export default function Words() {
             <div className="text-sm text-slate-300 truncate select-none">🔒 点击显示释义</div>
           )}
         </div>
-        <button
-          onClick={(e) => { e.stopPropagation(); speak(w.spelling) }}
-          className="text-slate-400 hover:text-blue-600 text-lg"
-          title="朗读"
-        >🔊</button>
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            onClick={(e) => { e.stopPropagation(); void toggleMark(w.id) }}
+            className={`w-10 h-10 flex items-center justify-center rounded-full text-xl leading-none transition-colors ${
+              st?.marked ? 'text-amber-500 bg-amber-50' : 'text-slate-300 hover:text-amber-400 hover:bg-amber-50'
+            }`}
+            title={st?.marked ? '已标记为重点记忆，点击取消' : '没记住？标记为重点记忆'}
+            aria-label={st?.marked ? '取消重点记忆标记' : '标记为重点记忆'}
+          >{st?.marked ? '⭐' : '☆'}</button>
+          <button
+            onClick={(e) => { e.stopPropagation(); speak(w.spelling) }}
+            className="w-10 h-10 flex items-center justify-center rounded-full text-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+            title="朗读"
+            aria-label="朗读"
+          >🔊</button>
+        </div>
       </li>
     )
   }
@@ -142,13 +156,22 @@ export default function Words() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">📚 背单词</h1>
-        <Link to="/study" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
-          开始学习 →
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link to="/study" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium">
+            开始学习 →
+          </Link>
+          <Link to="/review" className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium">
+            🔁 复习
+          </Link>
+        </div>
       </div>
 
       <Card>
-        <div className="text-sm text-slate-600 mb-2">已学 {learned} / {ALL_WORDS.length} 词</div>
+        <div className="text-sm text-slate-600 mb-2">
+          已学 {learned} / {ALL_WORDS.length} 词
+          {markedCount > 0 && <span className="ml-2 text-amber-600">⭐ 重点记忆 {markedCount} 个</span>}
+          {reviewedToday > 0 && <span className="ml-2 text-green-600">· 今日复习 {reviewedToday} 个</span>}
+        </div>
         <ProgressBar value={learned / ALL_WORDS.length} />
       </Card>
 

@@ -12,13 +12,15 @@ interface SrsStore {
   review: (wordId: string, correct: boolean) => Promise<void>;
   /** 标记单词已学（记一次"认识"） */
   markLearned: (wordId: string) => Promise<void>;
+  /** 切换「重点记忆」标记（没记住、需重点复习的单词） */
+  toggleMark: (wordId: string) => Promise<void>;
   /** 统计 */
   stats: () => { learned: number; due: number; newWords: number; levelCounts: number[] };
   resetAll: () => Promise<void>;
 }
 
 const EMPTY_STATE = (wordId: string): SrsState => ({
-  wordId, level: 0, interval: 0, due: 0, wrongCount: 0, reviewCount: 0, lastReview: 0,
+  wordId, level: 0, interval: 0, due: 0, wrongCount: 0, reviewCount: 0, lastReview: 0, marked: false,
 });
 
 export const useSrsStore = create<SrsStore>((set, get) => ({
@@ -60,6 +62,13 @@ export const useSrsStore = create<SrsStore>((set, get) => ({
     const prev = get().states[wordId] ?? EMPTY_STATE(wordId);
     if (prev.level >= 1) return;
     const next: SrsState = { ...prev, level: 1, interval: 1, due: Date.now() + 86400000, lastReview: Date.now(), learnedAt: prev.learnedAt ?? Date.now() };
+    await putRecord('srs', next);
+    set({ states: { ...get().states, [wordId]: next } });
+  },
+
+  toggleMark: async (wordId) => {
+    const prev = get().states[wordId] ?? EMPTY_STATE(wordId);
+    const next: SrsState = { ...prev, marked: !prev.marked };
     await putRecord('srs', next);
     set({ states: { ...get().states, [wordId]: next } });
   },

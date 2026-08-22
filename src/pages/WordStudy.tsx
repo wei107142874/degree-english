@@ -91,7 +91,7 @@ export default function WordStudy() {
   const current = queue[idx]
 
   // 自动朗读：闪卡模式下每出现一张新卡片（含进入学习的第一张）自动发音一遍。
-  // 自测模式、遮罩单词、手机遥控（本机静音）时不自动读。
+  // 自测模式、遮罩单词、手机遥控（本机静音，由电脑朗读）时不自动读。
   useEffect(() => {
     if (mode === 'flashcard' && !maskWord && !remoteOn && current) {
       void speak(current.spelling)
@@ -229,7 +229,7 @@ export default function WordStudy() {
     )
   }
 
-  // ---- 手机遥控端：只显示电脑广播的状态，本机只发指令、不发声 ----
+  // ---- 手机遥控端：只显示电脑广播的状态，本机只发指令、不发声（声音由电脑播放） ----
   if (remoteOn) {
     const rs = remoteState
     const rw = rs ? ALL_WORDS.find(w => w.id === rs.wordId) : undefined
@@ -300,48 +300,49 @@ export default function WordStudy() {
         <h1 className="text-2xl font-bold">📱 手机遥控</h1>
         <div className="text-sm text-slate-500">{rs.progress}</div>
 
-        <div className="flip-card h-72 cursor-pointer select-none" onClick={() => send({ type: 'cmd', action: 'flip' })}>
-          <div className={`flip-inner h-full ${rs.flipped ? 'flipped' : ''}`}>
-            <div className="flip-face h-full bg-white rounded-2xl shadow-md border border-slate-200 flex flex-col items-center justify-center p-6">
-              {rs.maskWord ? (
-                <>
-                  <div className="text-sm text-slate-500 mb-2">{rw.pos ?? ''}</div>
-                  <div className="text-2xl font-semibold text-blue-900 text-center leading-relaxed">{rw.meanings.join('；')}</div>
-                  <div className="absolute bottom-4 text-xs text-slate-300">点击翻面查看单词</div>
-                </>
-              ) : (
-                <>
-                  <div className="text-4xl font-bold text-slate-800">{rw.spelling}</div>
-                  {rw.phonetic && <div className="text-slate-400 mt-2">{rw.phonetic}</div>}
-                  <div className="absolute bottom-4 text-xs text-slate-300">点击翻面查看释义</div>
-                </>
-              )}
-            </div>
-            <div className="flip-back h-full bg-blue-50 rounded-2xl shadow-md border border-blue-200 flex flex-col items-center justify-center p-6 gap-2">
-              {rs.maskWord ? (
-                <>
-                  <div className="text-4xl font-bold text-slate-800">{rw.spelling}</div>
-                  {rw.phonetic && <div className="text-slate-400 mt-2">{rw.phonetic}</div>}
-                  {rw.examples[0] && (
-                    <div className="mt-2 text-sm text-slate-600 text-center">
-                      <div>{rw.examples[0].en}</div>
-                      <div className="text-slate-400 mt-1">{rw.examples[0].zh}</div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <>
-                  <div className="text-sm text-slate-500">{rw.pos ?? ''} {rw.phonetic ?? ''}</div>
-                  <div className="text-xl font-semibold text-blue-900">{rw.meanings.join('；')}</div>
-                  {rw.examples[0] && (
-                    <div className="mt-2 text-sm text-slate-600 text-center">
-                      <div>{rw.examples[0].en}</div>
-                      <div className="text-slate-400 mt-1">{rw.examples[0].zh}</div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
+        <div
+          className="min-h-72 bg-white rounded-2xl shadow-md border border-slate-200 flex flex-col p-6 cursor-pointer select-none"
+          onClick={() => send({ type: 'cmd', action: 'flip' })}
+        >
+          <div className="flex-1 flex flex-col items-center justify-center text-center">
+            {rs.maskWord ? (
+              <>
+                <div className="text-sm text-slate-500 mb-2">{rw.pos ?? ''}</div>
+                <div className="text-2xl font-semibold text-blue-900 leading-relaxed">{rw.meanings.join('；')}</div>
+                {rs.flipped && (
+                  <div className="mt-6 w-full border-t border-slate-100 pt-5">
+                    <div className="text-4xl font-bold text-slate-800">{rw.spelling}</div>
+                    {rw.phonetic && <div className="text-slate-400 mt-2">{rw.phonetic}</div>}
+                    {rw.examples[0] && (
+                      <div className="mt-3 text-sm text-slate-600">
+                        <div>{rw.examples[0].en}</div>
+                        <div className="text-slate-400 mt-1">{rw.examples[0].zh}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="text-4xl font-bold text-slate-800">{rw.spelling}</div>
+                {rw.phonetic && <div className="text-slate-400 mt-2">{rw.phonetic}</div>}
+                {rs.flipped && (
+                  <div className="mt-6 w-full border-t border-slate-100 pt-5">
+                    <div className="text-sm text-slate-500">{rw.pos ?? ''} {rw.phonetic ?? ''}</div>
+                    <div className="text-xl font-semibold text-blue-900">{rw.meanings.join('；')}</div>
+                    {rw.examples[0] && (
+                      <div className="mt-3 text-sm text-slate-600">
+                        <div>{rw.examples[0].en}</div>
+                        <div className="text-slate-400 mt-1">{rw.examples[0].zh}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <div className="text-center text-xs text-slate-300 pt-3">
+            {rs.flipped ? '点击收起' : rs.maskWord ? '点击显示单词' : '点击显示释义'}
           </div>
         </div>
 
@@ -473,48 +474,49 @@ export default function WordStudy() {
         </div>
       </div>
 
-      <div className="flip-card h-72 cursor-pointer select-none" onClick={() => setFlipped(f => !f)}>
-        <div className={`flip-inner h-full ${flipped ? 'flipped' : ''}`}>
-          <div className="flip-face h-full bg-white rounded-2xl shadow-md border border-slate-200 flex flex-col items-center justify-center p-6">
-            {maskWord ? (
-              <>
-                <div className="text-sm text-slate-500 mb-2">{current.pos ?? ''}</div>
-                <div className="text-2xl font-semibold text-blue-900 text-center leading-relaxed">{current.meanings.join('；')}</div>
-                <div className="absolute bottom-4 text-xs text-slate-300">点击翻面查看单词</div>
-              </>
-            ) : (
-              <>
-                <div className="text-4xl font-bold text-slate-800">{current.spelling}</div>
-                {current.phonetic && <div className="text-slate-400 mt-2">{current.phonetic}</div>}
-                <div className="absolute bottom-4 text-xs text-slate-300">点击翻面查看释义</div>
-              </>
-            )}
-          </div>
-          <div className="flip-back h-full bg-blue-50 rounded-2xl shadow-md border border-blue-200 flex flex-col items-center justify-center p-6 gap-2">
-            {maskWord ? (
-              <>
-                <div className="text-4xl font-bold text-slate-800">{current.spelling}</div>
-                {current.phonetic && <div className="text-slate-400 mt-2">{current.phonetic}</div>}
-                {current.examples[0] && (
-                  <div className="mt-2 text-sm text-slate-600 text-center">
-                    <div>{current.examples[0].en}</div>
-                    <div className="text-slate-400 mt-1">{current.examples[0].zh}</div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                <div className="text-sm text-slate-500">{current.pos ?? ''} {current.phonetic ?? ''}</div>
-                <div className="text-xl font-semibold text-blue-900">{current.meanings.join('；')}</div>
-                {current.examples[0] && (
-                  <div className="mt-2 text-sm text-slate-600 text-center">
-                    <div>{current.examples[0].en}</div>
-                    <div className="text-slate-400 mt-1">{current.examples[0].zh}</div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+      <div
+        className="min-h-72 bg-white rounded-2xl shadow-md border border-slate-200 flex flex-col p-6 cursor-pointer select-none"
+        onClick={() => setFlipped(f => !f)}
+      >
+        <div className="flex-1 flex flex-col items-center justify-center text-center">
+          {maskWord ? (
+            <>
+              <div className="text-sm text-slate-500 mb-2">{current.pos ?? ''}</div>
+              <div className="text-2xl font-semibold text-blue-900 leading-relaxed">{current.meanings.join('；')}</div>
+              {flipped && (
+                <div className="mt-6 w-full border-t border-slate-100 pt-5">
+                  <div className="text-4xl font-bold text-slate-800">{current.spelling}</div>
+                  {current.phonetic && <div className="text-slate-400 mt-2">{current.phonetic}</div>}
+                  {current.examples[0] && (
+                    <div className="mt-3 text-sm text-slate-600">
+                      <div>{current.examples[0].en}</div>
+                      <div className="text-slate-400 mt-1">{current.examples[0].zh}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="text-4xl font-bold text-slate-800">{current.spelling}</div>
+              {current.phonetic && <div className="text-slate-400 mt-2">{current.phonetic}</div>}
+              {flipped && (
+                <div className="mt-6 w-full border-t border-slate-100 pt-5">
+                  <div className="text-sm text-slate-500">{current.pos ?? ''} {current.phonetic ?? ''}</div>
+                  <div className="text-xl font-semibold text-blue-900">{current.meanings.join('；')}</div>
+                  {current.examples[0] && (
+                    <div className="mt-3 text-sm text-slate-600">
+                      <div>{current.examples[0].en}</div>
+                      <div className="text-slate-400 mt-1">{current.examples[0].zh}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div className="text-center text-xs text-slate-300 pt-3">
+          {flipped ? '点击收起' : maskWord ? '点击显示单词' : '点击显示释义'}
         </div>
       </div>
 

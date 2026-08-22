@@ -20,24 +20,6 @@ body {
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* 卡片翻转（闪卡） */
-.flip-card { perspective: 1200px; }
-.flip-inner {
-  transition: transform 0.45s;
-  transform-style: preserve-3d;
-  position: relative;
-}
-.flip-inner.flipped { transform: rotateY(180deg); }
-.flip-face {
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-}
-.flip-back {
-  transform: rotateY(180deg);
-  position: absolute;
-  inset: 0;
-}
-
 /* 底部弹出面板动画 */
 @keyframes slide-up {
   from { transform: translateY(100%); }

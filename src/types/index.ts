@@ -21,6 +21,7 @@ export interface SrsState {
   reviewCount: number;   // 复习次数
   lastReview: number;    // 上次复习时间戳
   learnedAt?: number;    // 首次学到的日期戳（区分“今天新学”与“今天复习”）
+  marked?: boolean;      // 标记为重点记忆（没怎么记住，需重点复习）
   updatedAt?: number;    // 最后修改时间（局域网同步用）
 }
 

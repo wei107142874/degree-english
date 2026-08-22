@@ -32,13 +32,15 @@ export interface RemoteState {
   doneCount: number
   sessionCorrect: number
   progress: string
+  marked?: boolean       // 当前词是否「重点记忆」（复习页使用）
+  hasMore?: boolean      // 复习页：是否还有下一批可继续复习
 }
 
 export type ControlPayload =
   | { type: 'state'; state: RemoteState }
   | {
       type: 'cmd'
-      action: 'grade' | 'flip' | 'mode' | 'mask' | 'quiz' | 'speak' | 'hello'
+      action: 'grade' | 'flip' | 'mode' | 'mask' | 'quiz' | 'speak' | 'hello' | 'mark' | 'continue' | 'restart'
       wordId?: string
       correct?: boolean
       mode?: 'flashcard' | 'quiz'

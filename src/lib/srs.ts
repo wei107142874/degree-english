@@ -49,6 +49,18 @@ export function getNewWords(states: SrsState[], knownCount: number, n: number): 
   return states.filter(s => s.level === 0).slice(0, n);
 }
 
+/**
+ * 今日已复习词数：已学（level>=1）且今天有复习动作、但并非今天首次学会的词。
+ * 用 learnedAt 区分「今天新学」与「今天复习」——今天新学的词不计入复习数。
+ */
+export function countReviewedToday(states: SrsState[], today: string): number {
+  return states.filter(s =>
+    s.level >= 1 &&
+    dateOfTs(s.lastReview) === today &&
+    (!s.learnedAt || dateOfTs(s.learnedAt) !== today),
+  ).length;
+}
+
 /** 记忆完成度：所有已学词等级 >= 3 的比例 */
 export function masteryRate(states: SrsState[]): number {
   const learned = states.filter(s => s.level >= 1);
