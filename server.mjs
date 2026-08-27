@@ -1,70 +1,33 @@
-// ============================================================
-// 学位英语备考助手 - 局域网同步服务器
-// ------------------------------------------------------------
-// 功能：
-//   1. 托管构建产物 dist/（电脑、手机都能通过浏览器访问）
-//   2. 提供 /api/sync/* 接口，让手机与电脑的学习记录双向同步
-//   3. 同步数据保存在 data/sync-data.json（本机磁盘，电脑关掉浏览器也还在）
-//
-// 启动：node server.mjs  （或 npm run serve）
-// 默认监听 0.0.0.0:4173，可用环境变量 PORT / HOST 覆盖
-// ============================================================
-
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
+
+const { Pool } = pg;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, 'dist');
 const DATA_DIR = path.join(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'sync-data.json');
+const SQLITE_FILE = path.join(DATA_DIR, 'degree-english.sqlite');
+const OLD_JSON_FILE = path.join(DATA_DIR, 'sync-data.json');
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '0.0.0.0';
-const BASE = '/degree-english'; // 必须与 vite.config.ts 的 base 一致
-
-// 存储名必须与浏览器 IndexedDB 的 objectStore 名一致（见 src/db/db.ts）
+const BASE = '/degree-english';
 const STORES = ['srs', 'attempts', 'plan', 'settings'];
+const DEFAULT_USER_ID = '魏勇';
+const LEGACY_USER_ID = 'main';
 
-// ---------- 数据模型 ----------
-// state = {
-//   srs/attempts/plan/settings: { [key]: 记录(含 updatedAt) },  // 当前有效数据
-//   tombstones: { [store]: { [key]: 删除时间戳 } },             // 删除标记（同步删除用）
-//   devices: { [deviceId]: { lastSeen } },                      // 最近连接的设备
-// }
-
-function initialState() {
-  return { srs: {}, attempts: {}, plan: {}, settings: {}, tombstones: { srs: {}, attempts: {}, plan: {}, settings: {} }, devices: {} };
-}
-
-let state = initialState();
-try {
-  state = { ...initialState(), ...JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')) };
-  for (const s of STORES) {
-    state[s] ??= {};
-    state.tombstones[s] ??= {};
-  }
-  state.devices ??= {};
-} catch {
-  /* 首次运行，数据文件还不存在 */
-}
-
-let saveTimer = null;
-function save() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(DATA_FILE, JSON.stringify(state));
-    } catch (e) {
-      console.error('[同步] 保存数据失败:', e.message);
-    }
-  }, 200);
-}
-
-// ---------- 同步合并逻辑 ----------
+const pool = new Pool({
+  host: process.env.PGHOST,
+  port: Number(process.env.PGPORT || 5432),
+  user: process.env.PGUSER,
+  password: process.env.PGPASSWORD,
+  database: process.env.PGDATABASE || 'postgres',
+});
 
 const keyOf = {
   srs: (r) => r?.wordId,
@@ -73,66 +36,259 @@ const keyOf = {
   settings: (r) => r?.id,
 };
 
-/** 合并一条客户端发来的记录（按 updatedAt 最新者胜） */
-function mergeRecord(store, rec, now) {
-  const key = keyOf[store](rec);
-  if (!key) return;
-  const recTs = rec.updatedAt ?? now;
-  if (!rec.updatedAt) rec.updatedAt = recTs; // 服务器兜底盖时间戳
-  // 若该 key 已被更晚的删除标记覆盖，则忽略这条旧记录
-  const tombTs = state.tombstones[store][key];
-  if (tombTs != null && tombTs >= recTs) return;
-  const cur = state[store][key];
-  if (cur && (cur.updatedAt ?? 0) >= recTs) return; // 服务器已有更新的版本
-  state[store][key] = rec;
-  delete state.tombstones[store][key];
+function cleanUserId(value) {
+  const id = String(value || '').trim();
+  return id && id.length <= 40 ? id : DEFAULT_USER_ID;
 }
 
-/** 清空某个 store（本地点“清空全部数据”后调用）：把所有记录变成删除标记 */
-function clearStore(store, now) {
-  for (const [key, rec] of Object.entries(state[store])) {
-    state.tombstones[store][key] = Math.max(state.tombstones[store][key] ?? 0, now, (rec.updatedAt ?? 0) + 1);
-  }
-  state[store] = {};
+function validStore(store) {
+  return STORES.includes(store);
 }
 
-/** 用本机数据整体覆盖服务器某个 store（一键“本机覆盖电脑”用） */
-function replaceStore(store, records, now) {
-  const incoming = new Map();
-  for (const r of records) {
-    const key = keyOf[store](r);
-    if (key) incoming.set(key, r);
+function recordKey(store, rec) {
+  const key = keyOf[store]?.(rec);
+  return key == null ? '' : String(key);
+}
+
+async function initStorage() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS records (
+      user_id TEXT NOT NULL DEFAULT '魏勇',
+      store TEXT NOT NULL,
+      record_key TEXT NOT NULL,
+      json JSONB NOT NULL,
+      updated_at BIGINT NOT NULL,
+      PRIMARY KEY (user_id, store, record_key)
+    )
+  `);
+  const { rows: columns } = await pool.query(`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'records' AND column_name = 'user_id'
+  `);
+  if (columns.length === 0) {
+    await pool.query(`ALTER TABLE records ADD COLUMN user_id TEXT NOT NULL DEFAULT '魏勇'`);
   }
-  for (const [key, rec] of Object.entries(state[store])) {
-    if (!incoming.has(key)) {
-      state.tombstones[store][key] = Math.max(state.tombstones[store][key] ?? 0, now, (rec.updatedAt ?? 0) + 1);
+  await pool.query(`ALTER TABLE records ALTER COLUMN user_id SET DEFAULT '魏勇'`);
+  const { rows: pk } = await pool.query(`
+    SELECT array_agg(a.attname ORDER BY k.ord) AS columns
+    FROM pg_index i
+    JOIN pg_class t ON t.oid = i.indrelid
+    JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
+    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+    WHERE t.relname = 'records' AND i.indisprimary
+    GROUP BY i.indexrelid
+  `);
+  const pkColumns = Array.isArray(pk[0]?.columns)
+    ? pk[0].columns
+    : String(pk[0]?.columns || '').replace(/[{}"]/g, '').split(',').filter(Boolean);
+  if (pkColumns.join(',') !== 'user_id,store,record_key') {
+    await pool.query('ALTER TABLE records DROP CONSTRAINT IF EXISTS records_pkey');
+    await pool.query('ALTER TABLE records ADD PRIMARY KEY (user_id, store, record_key)');
+  }
+  await pool.query('CREATE INDEX IF NOT EXISTS records_user_store_updated_idx ON records (user_id, store, updated_at)');
+  await migrateLegacyDefaultUser();
+  await pool.query(`
+    INSERT INTO users (id, created_at, updated_at)
+    SELECT user_id, min(updated_at), max(updated_at)
+    FROM records
+    GROUP BY user_id
+    ON CONFLICT (id) DO NOTHING
+  `);
+  const now = Date.now();
+  await pool.query(
+    'INSERT INTO users (id, created_at, updated_at) VALUES ($1, $2, $2) ON CONFLICT (id) DO NOTHING',
+    [DEFAULT_USER_ID, now],
+  );
+
+  if ((await dataCount()) > 0) return;
+  if (await migrateSqlite()) return;
+  await migrateOldJson();
+}
+
+async function migrateLegacyDefaultUser() {
+  if (DEFAULT_USER_ID === LEGACY_USER_ID) return;
+  const now = Date.now();
+  await pool.query(
+    `INSERT INTO users (id, created_at, updated_at)
+     VALUES ($1, $2, $2)
+     ON CONFLICT (id) DO NOTHING`,
+    [DEFAULT_USER_ID, now],
+  );
+  await pool.query(
+    `INSERT INTO records (user_id, store, record_key, json, updated_at)
+     SELECT $1, store, record_key, json, updated_at
+     FROM records
+     WHERE user_id = $2
+     ON CONFLICT (user_id, store, record_key) DO NOTHING`,
+    [DEFAULT_USER_ID, LEGACY_USER_ID],
+  );
+  await pool.query('DELETE FROM records WHERE user_id = $1', [LEGACY_USER_ID]);
+  await pool.query('DELETE FROM users WHERE id = $1', [LEGACY_USER_ID]);
+}
+
+async function ensureUser(userId, db = pool) {
+  const id = cleanUserId(userId);
+  const now = Date.now();
+  await db.query(
+    `INSERT INTO users (id, created_at, updated_at)
+     VALUES ($1, $2, $2)
+     ON CONFLICT (id) DO UPDATE SET updated_at = EXCLUDED.updated_at`,
+    [id, now],
+  );
+  return id;
+}
+
+async function createUser(userId) {
+  const id = String(userId || '').trim();
+  if (!id || id.length > 40) return null;
+  const now = Date.now();
+  const { rowCount } = await pool.query(
+    `INSERT INTO users (id, created_at, updated_at)
+     VALUES ($1, $2, $2)
+     ON CONFLICT (id) DO NOTHING`,
+    [id, now],
+  );
+  return rowCount > 0 ? id : null;
+}
+
+async function upsertRecord(userId, store, rec, fallbackTs = Date.now(), db = pool) {
+  const cleanId = await ensureUser(userId, db);
+  const key = recordKey(store, rec);
+  if (!key || typeof rec !== 'object' || Array.isArray(rec)) return false;
+  const updatedAt = Number.isFinite(Number(rec.updatedAt)) ? Number(rec.updatedAt) : fallbackTs;
+  const next = { ...rec, updatedAt };
+  await db.query(
+    `
+      INSERT INTO records (user_id, store, record_key, json, updated_at)
+      VALUES ($1, $2, $3, $4::jsonb, $5)
+      ON CONFLICT (user_id, store, record_key) DO UPDATE SET
+        json = EXCLUDED.json,
+        updated_at = EXCLUDED.updated_at
+      WHERE EXCLUDED.updated_at >= records.updated_at
+    `,
+    [cleanId, store, key, JSON.stringify(next), updatedAt],
+  );
+  return true;
+}
+
+async function listRecords(userId, store) {
+  const { rows } = await pool.query(
+    'SELECT json FROM records WHERE user_id = $1 AND store = $2 ORDER BY updated_at, record_key',
+    [cleanUserId(userId), store],
+  );
+  return rows.map(row => row.json);
+}
+
+async function replaceAll(userId, recordsByStore) {
+  const cleanId = cleanUserId(userId);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureUser(cleanId, client);
+    await client.query('DELETE FROM records WHERE user_id = $1', [cleanId]);
+    const now = Date.now();
+    for (const store of STORES) {
+      for (const rec of recordsByStore?.[store] || []) await upsertRecord(cleanId, store, rec, now, client);
     }
-  }
-  state[store] = {};
-  for (const [key, rec] of incoming) {
-    rec.updatedAt ??= now;
-    state[store][key] = rec;
-    delete state.tombstones[store][key];
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
 }
 
-/** 拉取 since 之后的所有变更（含删除标记） */
-function pullChanges(since) {
-  const changes = { srs: [], attempts: [], plan: [], settings: [] };
-  for (const store of STORES) {
-    for (const rec of Object.values(state[store])) {
-      if ((rec.updatedAt ?? 0) > since) changes[store].push(rec);
-    }
-    for (const [key, ts] of Object.entries(state.tombstones[store])) {
-      if (ts > since) {
-        changes[store].push(store === 'srs' ? { wordId: key, deleted: true, updatedAt: ts } : { id: key, deleted: true, updatedAt: ts });
-      }
-    }
-  }
-  return changes;
+async function dataCount() {
+  const { rows } = await pool.query('SELECT count(*) AS n FROM records');
+  return Number(rows[0]?.n || 0);
 }
 
-// ---------- HTTP ----------
+async function listUsers() {
+  const { rows } = await pool.query(`
+    SELECT u.id, count(r.record_key) AS records, greatest(u.updated_at, coalesce(max(r.updated_at), 0)) AS updated_at
+    FROM users u
+    LEFT JOIN records r ON r.user_id = u.id
+    GROUP BY u.id, u.updated_at
+    ORDER BY u.id
+  `);
+  return rows.map(row => ({
+    id: row.id,
+    records: Number(row.records || 0),
+    updatedAt: Number(row.updated_at || 0),
+  }));
+}
+
+async function copyUserData(fromUserId, toUserId) {
+  const from = cleanUserId(fromUserId);
+  const to = cleanUserId(toUserId);
+  if (from === to) return 0;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureUser(to, client);
+    await client.query('DELETE FROM records WHERE user_id = $1', [to]);
+    const { rows } = await client.query(
+      'SELECT store, record_key, json, updated_at FROM records WHERE user_id = $1 ORDER BY store, record_key',
+      [from],
+    );
+    for (const row of rows) {
+      await client.query(
+        `INSERT INTO records (user_id, store, record_key, json, updated_at)
+         VALUES ($1, $2, $3, $4::jsonb, $5)`,
+        [to, row.store, row.record_key, JSON.stringify(row.json), row.updated_at],
+      );
+    }
+    await client.query('UPDATE users SET updated_at = $2 WHERE id = $1', [to, Date.now()]);
+    await client.query('COMMIT');
+    return rows.length;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function migrateSqlite() {
+  if (!fs.existsSync(SQLITE_FILE)) return false;
+  try {
+    const sqlite = new DatabaseSync(SQLITE_FILE);
+    const rows = sqlite.prepare('SELECT store, json, updated_at FROM records ORDER BY updated_at, key').all();
+    if (rows.length === 0) return false;
+    const byStore = Object.fromEntries(STORES.map(store => [store, []]));
+    for (const row of rows) byStore[row.store]?.push(JSON.parse(row.json));
+    await replaceAll(DEFAULT_USER_ID, byStore);
+    console.log(`[data] migrated ${rows.length} records from ${SQLITE_FILE} to PostgreSQL`);
+    return true;
+  } catch (e) {
+    console.error('[data] SQLite migration failed:', e.message);
+    return false;
+  }
+}
+
+async function migrateOldJson() {
+  if (!fs.existsSync(OLD_JSON_FILE)) return false;
+  try {
+    const old = JSON.parse(fs.readFileSync(OLD_JSON_FILE, 'utf8'));
+    const byStore = Object.fromEntries(STORES.map(store => [store, Object.values(old[store] || {})]));
+    const total = Object.values(byStore).reduce((n, rows) => n + rows.length, 0);
+    if (total === 0) return false;
+    await replaceAll(DEFAULT_USER_ID, byStore);
+    console.log(`[data] migrated ${total} records from ${OLD_JSON_FILE} to PostgreSQL`);
+    return true;
+  } catch (e) {
+    console.error('[data] old JSON migration failed:', e.message);
+    return false;
+  }
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -147,25 +303,28 @@ const MIME = {
 };
 
 function sendJson(res, status, obj) {
-  const body = JSON.stringify(obj);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Cache-Control': 'no-store',
   });
-  res.end(body);
+  res.end(JSON.stringify(obj));
 }
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (c) => {
-      data += c;
+    req.on('data', (chunk) => {
+      data += chunk;
       if (data.length > 50 * 1024 * 1024) reject(new Error('body too large'));
     });
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });
+}
+
+async function readJson(req) {
+  return JSON.parse((await readBody(req)) || '{}');
 }
 
 function serveStatic(req, res, rawPath) {
@@ -182,7 +341,8 @@ function serveStatic(req, res, rawPath) {
   const rel = p.replace(/^[/\\]+/, '');
   const filePath = path.resolve(DIST_DIR, rel);
   if (filePath !== DIST_DIR && !filePath.startsWith(DIST_DIR + path.sep)) {
-    res.writeHead(403); return res.end('Forbidden');
+    res.writeHead(403);
+    return res.end('Forbidden');
   }
 
   fs.stat(filePath, (err, st) => {
@@ -196,22 +356,22 @@ function serveStatic(req, res, rawPath) {
       fs.createReadStream(filePath).pipe(res);
       return;
     }
-    // SPA 兜底：未知路径回 index.html（应用使用 HashRouter，正常不会走到）
     if (req.headers.accept?.includes('text/html')) {
       fs.readFile(path.join(DIST_DIR, 'index.html'), (e2, buf) => {
-        if (e2) { res.writeHead(404); return res.end('Not Found'); }
+        if (e2) {
+          res.writeHead(404);
+          return res.end('Not Found');
+        }
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(buf);
       });
       return;
     }
-    res.writeHead(404); res.end('Not Found');
+    res.writeHead(404);
+    res.end('Not Found');
   });
 }
 
-// ---------- 实时控制通道（手机遥控电脑背单词） ----------
-// 手机点「认识/模糊/不认识」→ POST /api/control/send → 服务器把指令
-// 广播给所有 SSE 客户端（电脑端收到后执行复习并翻卡）。
 const controlClients = new Set();
 
 function broadcastControl(msg) {
@@ -219,105 +379,160 @@ function broadcastControl(msg) {
   for (const res of controlClients) {
     try {
       res.write(`data: ${data}\n\n`);
-    } catch { /* 客户端已断开，忽略 */ }
+    } catch {
+      // Closed client.
+    }
   }
+}
+
+async function handleDbApi(req, res, pathname) {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const userId = cleanUserId(url.searchParams.get('user') || req.headers['x-user-id']);
+
+  if (pathname === '/api/db/users' && req.method === 'GET') {
+    return sendJson(res, 200, { ok: true, users: await listUsers() });
+  }
+
+  if (pathname === '/api/db/users' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJson(req);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: 'invalid json' });
+    }
+    if (!String(body.userId || '').trim()) return sendJson(res, 400, { ok: false, error: 'empty user' });
+    const id = await createUser(body.userId);
+    if (!id) return sendJson(res, 409, { ok: false, error: 'user exists' });
+    return sendJson(res, 200, { ok: true, user: { id, records: 0, updatedAt: Date.now() } });
+  }
+
+  if (pathname === '/api/db/copy-user' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJson(req);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: 'invalid json' });
+    }
+    const fromUser = cleanUserId(body.fromUserId);
+    const toUser = cleanUserId(body.toUserId || userId);
+    if (fromUser === toUser) return sendJson(res, 400, { ok: false, error: 'same user' });
+    const copied = await copyUserData(fromUser, toUser);
+    return sendJson(res, 200, { ok: true, copied, serverNow: Date.now() });
+  }
+
+  if (pathname === '/api/db/import' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJson(req);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: 'invalid json' });
+    }
+    await replaceAll(userId, body.records);
+    return sendJson(res, 200, { ok: true, serverNow: Date.now() });
+  }
+
+  const parts = pathname.split('/').filter(Boolean);
+  const store = parts[2];
+  if (!validStore(store)) return sendJson(res, 404, { ok: false, error: 'unknown store' });
+
+  if (req.method === 'GET') {
+    return sendJson(res, 200, { ok: true, records: await listRecords(userId, store) });
+  }
+
+  if (req.method === 'PUT' || req.method === 'POST') {
+    let body;
+    try {
+      body = await readJson(req);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: 'invalid json' });
+    }
+    const records = Array.isArray(body.records) ? body.records : [body.record ?? body];
+    let saved = 0;
+    for (const rec of records) if (await upsertRecord(userId, store, rec)) saved++;
+    return sendJson(res, 200, { ok: true, saved, serverNow: Date.now() });
+  }
+
+  if (req.method === 'DELETE') {
+    const key = parts[3] ? decodeURIComponent(parts[3]) : '';
+    if (key) await pool.query('DELETE FROM records WHERE user_id = $1 AND store = $2 AND record_key = $3', [userId, store, key]);
+    else await pool.query('DELETE FROM records WHERE user_id = $1 AND store = $2', [userId, store]);
+    return sendJson(res, 200, { ok: true, serverNow: Date.now() });
+  }
+
+  return sendJson(res, 405, { ok: false, error: 'method not allowed' });
+}
+
+async function handleSyncCompat(req, res, pathname) {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const userId = cleanUserId(url.searchParams.get('user') || req.headers['x-user-id']);
+
+  if (pathname === '/api/sync/info' && req.method === 'GET') {
+    return sendJson(res, 200, {
+      ok: true,
+      serverTime: Date.now(),
+      app: 'degree-english',
+      dataCount: await dataCount(),
+      addresses: lanAddresses(),
+      storage: 'postgresql',
+      userId,
+      users: await listUsers(),
+    });
+  }
+
+  if ((pathname === '/api/sync/pull' || pathname === '/api/sync/push') && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJson(req);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: 'invalid json' });
+    }
+
+    const now = Date.now();
+    if (pathname === '/api/sync/pull') {
+      const changes = Object.fromEntries(await Promise.all(STORES.map(async store => [store, await listRecords(userId, store)])));
+      return sendJson(res, 200, { ok: true, serverNow: now, changes });
+    }
+
+    if (body.clearAll) {
+      await pool.query('DELETE FROM records WHERE user_id = $1', [userId]);
+    } else if (body.replace) {
+      await replaceAll(userId, body.records);
+    } else {
+      for (const store of STORES) {
+        for (const rec of body.records?.[store] || []) await upsertRecord(userId, store, rec, now);
+      }
+    }
+    return sendJson(res, 200, { ok: true, serverNow: now });
+  }
+
+  return sendJson(res, 404, { ok: false, error: 'not found' });
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
 
-  // CORS 预检
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     });
     return res.end();
   }
 
-  // ---- 同步 API ----
-  if (pathname.startsWith('/api/sync/')) {
-    try {
-      if (pathname === '/api/sync/info' && req.method === 'GET') {
-        const total = STORES.reduce((n, s) => n + Object.keys(state[s]).length, 0);
-        console.log(`[同步] ${new Date().toLocaleTimeString()} 状态查询 (数据 ${total} 条)`);
-        return sendJson(res, 200, {
-          ok: true,
-          serverTime: Date.now(),
-          app: 'degree-english',
-          dataCount: total,
-          addresses: lanAddresses(),
-        });
-      }
+  try {
+    if (pathname.startsWith('/api/db/')) return await handleDbApi(req, res, pathname);
+    if (pathname.startsWith('/api/sync/')) return await handleSyncCompat(req, res, pathname);
 
-      if ((pathname === '/api/sync/pull' || pathname === '/api/sync/push') && req.method === 'POST') {
-        let body;
-        try {
-          body = JSON.parse((await readBody(req)) || '{}');
-        } catch {
-          return sendJson(res, 400, { ok: false, error: '请求格式错误' });
-        }
-
-        const deviceId = String(body.deviceId || 'unknown');
-        state.devices[deviceId] = { lastSeen: Date.now() };
-        const keys = Object.keys(state.devices);
-        if (keys.length > 50) {
-          for (const k of keys.slice(0, keys.length - 50)) delete state.devices[k];
-        }
-        const now = Date.now();
-
-        if (pathname === '/api/sync/pull') {
-          const since = Number.isFinite(body.since) ? Number(body.since) : 0;
-          const changes = pullChanges(since);
-          console.log(`[同步] ${new Date().toLocaleTimeString()} 拉取 ${deviceId.slice(0, 8)} since=${since} 变更 ${Object.values(changes).reduce((n, a) => n + a.length, 0)} 条`);
-          save();
-          return sendJson(res, 200, { ok: true, serverNow: now, changes });
-        }
-
-        // push
-        const records = body.records || {};
-        if (body.clearAll) {
-          for (const s of STORES) clearStore(s, now);
-          console.log(`[同步] ${new Date().toLocaleTimeString()} ${deviceId.slice(0, 8)} 清空全部数据`);
-        } else if (body.replace) {
-          for (const s of STORES) {
-            if (Array.isArray(records[s])) replaceStore(s, records[s], now);
-          }
-          console.log(`[同步] ${new Date().toLocaleTimeString()} ${deviceId.slice(0, 8)} 用本机数据覆盖服务器`);
-        } else {
-          for (const s of STORES) {
-            if (Array.isArray(records[s])) {
-              for (const rec of records[s]) mergeRecord(s, rec, now);
-            }
-          }
-          const pushed = Object.values(records).reduce((n, a) => n + (Array.isArray(a) ? a.length : 0), 0);
-          console.log(`[同步] ${new Date().toLocaleTimeString()} ${deviceId.slice(0, 8)} 推送 ${pushed} 条`);
-        }
-        save();
-        return sendJson(res, 200, { ok: true, serverNow: now });
-      }
-
-      return sendJson(res, 404, { ok: false, error: '接口不存在' });
-    } catch (e) {
-      console.error('[同步] 处理失败:', e);
-      return sendJson(res, 500, { ok: false, error: '服务器内部错误' });
-    }
-  }
-
-  // ---- 实时控制通道（手机遥控电脑） ----
-  if (pathname.startsWith('/api/control/')) {
     if (pathname === '/api/control/send' && req.method === 'POST') {
       let body;
       try {
-        body = JSON.parse((await readBody(req)) || '{}');
+        body = await readJson(req);
       } catch {
-        return sendJson(res, 400, { ok: false, error: '请求格式错误' });
+        return sendJson(res, 400, { ok: false, error: 'invalid json' });
       }
-      const deviceId = String(body.deviceId || 'unknown');
-      broadcastControl({ ...body, deviceId });
-      console.log(`[遥控] ${new Date().toLocaleTimeString()} ${deviceId.slice(0, 8)} 指令: ${body.type || '?'}`);
+      broadcastControl(body);
       return sendJson(res, 200, { ok: true, relayed: controlClients.size });
     }
 
@@ -331,23 +546,26 @@ const server = http.createServer(async (req, res) => {
       res.write(': connected\n\n');
       controlClients.add(res);
       const ping = setInterval(() => {
-        try { res.write(': ping\n\n'); } catch { /* 客户端已断开 */ }
+        try {
+          res.write(': ping\n\n');
+        } catch {
+          // Closed client.
+        }
       }, 25000);
       req.on('close', () => {
         clearInterval(ping);
         controlClients.delete(res);
       });
-      return; // SSE 长连接，不结束响应
+      return;
     }
-
-    return sendJson(res, 404, { ok: false, error: '接口不存在' });
+  } catch (e) {
+    console.error('[server] request failed:', e);
+    return sendJson(res, 500, { ok: false, error: 'server error' });
   }
 
-  // ---- 静态文件（应用本体）----
-  if (req.method === 'GET' || req.method === 'HEAD') {
-    return serveStatic(req, res, pathname);
-  }
-  res.writeHead(405); res.end('Method Not Allowed');
+  if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(req, res, pathname);
+  res.writeHead(405);
+  res.end('Method Not Allowed');
 });
 
 function lanAddresses() {
@@ -355,9 +573,7 @@ function lanAddresses() {
   const nets = os.networkInterfaces();
   for (const name of Object.keys(nets)) {
     for (const net of nets[name] || []) {
-      if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254.')) {
-        out.push(net.address);
-      }
+      if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254.')) out.push(net.address);
     }
   }
   return out;
@@ -365,26 +581,19 @@ function lanAddresses() {
 
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
-    console.log('==========================================');
-    console.log('  端口 4173 已被占用：服务器似乎已经在运行了。');
-    console.log('  请直接使用（浏览器访问 http://localhost:4173），');
-    console.log('  或先关闭旧的《启动学习助手》窗口再重新启动。');
-    console.log('==========================================');
+    console.log(`Port ${PORT} is already in use. Use http://localhost:${PORT} or stop the old server first.`);
     process.exit(0);
   }
   throw e;
 });
 
+await initStorage();
+
 server.listen(PORT, HOST, () => {
   console.log('==========================================');
-  console.log('  学位英语备考助手 - 局域网服务器已启动');
-  console.log(`  电脑访问:   http://localhost:${PORT}`);
-  const ips = lanAddresses();
-  for (const ip of ips) {
-    console.log(`  手机访问:   http://${ip}:${PORT}  (手机需连同一 Wi-Fi)`);
-  }
-  if (ips.length === 0) console.log('  (未检测到局域网地址，请检查网络连接)');
-  console.log(`  同步数据:   ${DATA_FILE}`);
-  console.log('  按 Ctrl+C 停止服务器（学习数据已自动保存）');
+  console.log('  Degree English server started');
+  console.log(`  URL:      http://localhost:${PORT}`);
+  for (const ip of lanAddresses()) console.log(`  LAN URL:  http://${ip}:${PORT}`);
+  console.log(`  PostgreSQL: ${process.env.PGHOST}:${process.env.PGPORT || 5432}/${process.env.PGDATABASE || 'postgres'}`);
   console.log('==========================================');
 });

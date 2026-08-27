@@ -1,9 +1,5 @@
-import { openDB, type IDBPDatabase } from 'idb';
 import type { SrsState, Attempt, StudyPlan, Settings } from '../types';
 import { now } from '../sync/clock';
-
-const DB_NAME = 'degree-english-db';
-const DB_VERSION = 1;
 
 export interface DbSchema {
   srs: { key: string; value: SrsState };
@@ -12,69 +8,115 @@ export interface DbSchema {
   settings: { key: string; value: Settings };
 }
 
-let dbPromise: Promise<IDBPDatabase<DbSchema>> | null = null;
+type StoreName = keyof DbSchema;
+const DEFAULT_USER_ID = '魏勇';
+const LEGACY_USER_ID = 'main';
+const USER_STORAGE_KEY = 'degree-english-user-id';
 
-export function getDb(): Promise<IDBPDatabase<DbSchema>> {
-  if (!dbPromise) {
-    dbPromise = openDB<DbSchema>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        if (!db.objectStoreNames.contains('srs')) {
-          db.createObjectStore('srs', { keyPath: 'wordId' });
-        }
-        if (!db.objectStoreNames.contains('attempts')) {
-          const s = db.createObjectStore('attempts', { keyPath: 'id' });
-          s.createIndex('by-question', 'questionId');
-          s.createIndex('by-ts', 'ts');
-        }
-        if (!db.objectStoreNames.contains('plan')) {
-          db.createObjectStore('plan', { keyPath: 'id' });
-        }
-        if (!db.objectStoreNames.contains('settings')) {
-          db.createObjectStore('settings', { keyPath: 'id' });
-        }
-      }
-    });
+type RemoteDb = {
+  getAll: (store: StoreName | string) => Promise<any[]>;
+  put: <T extends { updatedAt?: number }>(store: StoreName | string, record: T) => Promise<void>;
+  clear: (store: StoreName | string) => Promise<void>;
+  delete: (store: StoreName | string, key: string) => Promise<void>;
+};
+
+async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
+    ...options,
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+export function cleanUserId(value: string | null | undefined): string {
+  const id = String(value || '').trim();
+  return id && id.length <= 40 ? id : DEFAULT_USER_ID;
+}
+
+export function getCurrentUserId(): string {
+  try {
+    const id = cleanUserId(localStorage.getItem(USER_STORAGE_KEY));
+    if (id === LEGACY_USER_ID) {
+      localStorage.setItem(USER_STORAGE_KEY, DEFAULT_USER_ID);
+      return DEFAULT_USER_ID;
+    }
+    return id;
+  } catch {
+    return DEFAULT_USER_ID;
   }
-  return dbPromise;
 }
 
-// 通用读写辅助
-export async function putAll<T extends { id: string }>(store: string, items: T[]) {
+export function setCurrentUserId(userId: string) {
+  const next = cleanUserId(userId);
+  localStorage.setItem(USER_STORAGE_KEY, next);
+  window.dispatchEvent(new CustomEvent('degree-english-user-change', { detail: next }));
+}
+
+export function withCurrentUser(url: string): string {
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}user=${encodeURIComponent(getCurrentUserId())}`;
+}
+
+function storeUrl(store: StoreName | string, key?: string) {
+  return withCurrentUser(`/api/db/${encodeURIComponent(store)}${key ? '/' + encodeURIComponent(key) : ''}`);
+}
+
+const remoteDb: RemoteDb = {
+  async getAll(store) {
+    const data = await fetchJson<{ ok: boolean; records: any[] }>(storeUrl(store));
+    return data.records;
+  },
+  async put(store, record) {
+    await fetchJson(storeUrl(store), {
+      method: 'PUT',
+      body: JSON.stringify({ record }),
+    });
+  },
+  async clear(store) {
+    await fetchJson(storeUrl(store), { method: 'DELETE' });
+  },
+  async delete(store, key) {
+    await fetchJson(storeUrl(store, key), { method: 'DELETE' });
+  },
+};
+
+export function getDb(): Promise<RemoteDb> {
+  return Promise.resolve(remoteDb);
+}
+
+export async function putAll<T extends { id: string; updatedAt?: number }>(store: StoreName | string, items: T[]) {
+  await fetchJson(storeUrl(store), {
+    method: 'PUT',
+    body: JSON.stringify({ records: items.map(stamp) }),
+  });
+}
+
+export async function getAll<T>(store: StoreName | string): Promise<T[]> {
   const db = await getDb();
-  const tx = db.transaction(store, 'readwrite');
-  await Promise.all(items.map(i => tx.store.put(i)));
-  await tx.done;
+  return db.getAll(store) as Promise<T[]>;
 }
 
-export async function getAll<T>(store: string): Promise<T[]> {
-  const db = await getDb();
-  return (await db.getAll(store)) as T[];
-}
-
-export async function clearStore(store: string) {
+export async function clearStore(store: StoreName | string) {
   const db = await getDb();
   await db.clear(store);
 }
 
-export async function deleteRecord(store: string, key: string) {
+export async function deleteRecord(store: StoreName | string, key: string) {
   const db = await getDb();
   await db.delete(store, key);
 }
 
-/** 给记录盖上修改时间戳（局域网同步用，使用校准后的服务器时间） */
 export function stamp<T extends { updatedAt?: number }>(record: T): T {
   return { ...record, updatedAt: now() };
 }
 
-/** 写入一条记录，自动盖上「当前」修改时间戳（局域网同步按最新者胜合并）。
- *  注意：必须每次写入都刷新 updatedAt —— 若保留旧值，同步端会因
- *  时间戳 ≤ 上次同步时间而认为没有新改动，导致后续修改不再上传。 */
-export async function putRecord<T extends { updatedAt?: number }>(store: string, record: T) {
+export async function putRecord<T extends { updatedAt?: number }>(store: StoreName | string, record: T) {
   const db = await getDb();
   await db.put(store, stamp(record));
 }
 
-// 导出全部用户数据（备份）
 export async function exportAll() {
   const [srs, attempts, plans, settings] = await Promise.all([
     getAll<any>('srs'),
@@ -82,18 +124,50 @@ export async function exportAll() {
     getAll<any>('plan'),
     getAll<any>('settings'),
   ]);
-  return { version: 1, exportedAt: Date.now(), srs, attempts, plans, settings };
+  return { version: 2, exportedAt: Date.now(), srs, attempts, plans, settings };
 }
 
-// 导入备份（覆盖）
 export async function importAll(data: Awaited<ReturnType<typeof exportAll>>) {
-  const db = await getDb();
-  const tx = db.transaction(['srs', 'attempts', 'plan', 'settings'], 'readwrite');
-  await Promise.all([
-    ...data.srs.map(i => tx.objectStore('srs').put(i)),
-    ...data.attempts.map(i => tx.objectStore('attempts').put(i)),
-    ...data.plans.map(i => tx.objectStore('plan').put(i)),
-    ...data.settings.map(i => tx.objectStore('settings').put(i)),
-  ]);
-  await tx.done;
+  await fetchJson(withCurrentUser('/api/db/import'), {
+    method: 'POST',
+    body: JSON.stringify({
+      records: {
+        srs: data.srs || [],
+        attempts: data.attempts || [],
+        plan: data.plans || [],
+        settings: data.settings || [],
+      },
+    }),
+  });
+}
+
+export interface DbUser {
+  id: string;
+  records: number;
+  updatedAt: number;
+}
+
+export async function listUsers(): Promise<DbUser[]> {
+  const data = await fetchJson<{ ok: boolean; users: DbUser[] }>(withCurrentUser('/api/db/users'));
+  return data.users;
+}
+
+export async function createUser(userId: string): Promise<DbUser> {
+  const res = await fetch(withCurrentUser('/api/db/users'), {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId }),
+  });
+  if (res.status === 409) throw new Error('user exists');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json() as { ok: boolean; user: DbUser };
+  return data.user;
+}
+
+export async function copyUserData(fromUserId: string, toUserId = getCurrentUserId()) {
+  await fetchJson(withCurrentUser('/api/db/copy-user'), {
+    method: 'POST',
+    body: JSON.stringify({ fromUserId, toUserId }),
+  });
 }

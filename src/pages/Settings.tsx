@@ -3,14 +3,23 @@ import { useSettingsStore } from '../store/useSettingsStore'
 import { useSrsStore } from '../store/useSrsStore'
 import { useAttemptStore } from '../store/useAttemptStore'
 import { usePlanStore } from '../store/usePlanStore'
-import { exportAll, importAll } from '../db/db'
+import {
+  copyUserData,
+  createUser,
+  exportAll,
+  getCurrentUserId,
+  importAll,
+  listUsers,
+  setCurrentUserId,
+  type DbUser,
+} from '../db/db'
 import { DEFAULT_SECTION_CONFIG } from '../lib/examConfig'
 import { Card, speak } from '../components/common'
 import LearningGuide from '../components/LearningGuide'
 import { engineStatus } from '../lib/speech'
 import {
   getSyncStatus, onSyncStatus, getServerInfo,
-  syncNow, syncPullOverwrite, syncPushOverwrite, syncClearAll,
+  syncNow, syncClearAll,
 } from '../sync/client'
 
 export default function Settings() {
@@ -23,8 +32,17 @@ export default function Settings() {
   const [daily, setDaily] = useState(settings.dailyNewWords)
   const [msg, setMsg] = useState('')
   const [syncStatus, setSyncStatus] = useState(getSyncStatus())
+  const [newUser, setNewUser] = useState('')
+  const [users, setUsers] = useState<DbUser[]>([])
+  const [copyFrom, setCopyFrom] = useState('')
 
   useEffect(() => onSyncStatus(setSyncStatus), [])
+  useEffect(() => {
+    listUsers().then(rows => {
+      setUsers(rows)
+      setCopyFrom(rows.find(u => u.id !== getCurrentUserId())?.id ?? '')
+    }).catch(() => setUsers([]))
+  }, [])
 
   const save = async () => {
     await update({ examDate: examDate || null, dailyNewWords: daily })
@@ -59,9 +77,33 @@ export default function Settings() {
     if (!confirm('确定要清空全部学习数据吗？此操作不可恢复！')) return
     await Promise.all([resetSrs(), resetAttempts(), resetPlan()])
     await update({ examDate: null, dailyNewWords: 30 })
-    // 同时清空局域网服务器上的数据，避免下次同步把旧数据拉回来
+    // 同时清空服务器上的数据
     await syncClearAll()
     setMsg('已清空全部数据')
+    setTimeout(() => location.reload(), 800)
+  }
+
+  const createNewUser = async () => {
+    const name = newUser.trim()
+    if (!name) {
+      setMsg('请输入用户名称')
+      return
+    }
+    try {
+      await createUser(name)
+      setCurrentUserId(name)
+      setMsg('用户已创建；不拉取数据则从 0 开始')
+      setTimeout(() => location.reload(), 800)
+    } catch (e) {
+      setMsg(e instanceof Error && e.message === 'user exists' ? '用户名称已存在，请重新创建一个新名称' : '创建用户失败')
+    }
+  }
+
+  const doCopyUser = async () => {
+    if (!copyFrom || copyFrom === getCurrentUserId()) return
+    if (!confirm(`确定用「${copyFrom}」的数据覆盖当前用户「${getCurrentUserId()}」吗？此操作不可恢复。`)) return
+    await copyUserData(copyFrom)
+    setMsg('已复制用户数据，正在刷新页面...')
     setTimeout(() => location.reload(), 800)
   }
 
@@ -83,6 +125,39 @@ export default function Settings() {
           </div>
         </div>
         <button onClick={save} className="mt-3 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm">保存设置</button>
+      </Card>
+
+      <Card>
+        <h2 className="font-bold text-slate-800 mb-2">用户数据隔离</h2>
+        <p className="text-xs text-slate-500 mb-3">当前用户：<b>{getCurrentUserId()}</b>。先创建新用户名称；不拉取数据就从 0 开始。</p>
+        <div className="grid md:grid-cols-[1fr_auto] gap-2 mb-3">
+          <input
+            value={newUser}
+            onChange={e => setNewUser(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
+            placeholder="例如 张三、student-a"
+          />
+          <button onClick={createNewUser} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">创建用户</button>
+        </div>
+        <div className="grid md:grid-cols-[1fr_auto] gap-2">
+          <select
+            value={copyFrom}
+            onChange={e => setCopyFrom(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
+          >
+            <option value="">选择要拉取的用户</option>
+            {users.filter(u => u.id !== getCurrentUserId()).map(u => (
+              <option key={u.id} value={u.id}>{u.id}（{u.records} 条）</option>
+            ))}
+          </select>
+          <button
+            onClick={doCopyUser}
+            disabled={!copyFrom}
+            className="border border-red-300 text-red-600 px-4 py-2 rounded-lg text-sm disabled:opacity-50"
+          >
+            拉取并覆盖当前用户
+          </button>
+        </div>
       </Card>
 
       <LearningGuide />
@@ -127,18 +202,18 @@ export default function Settings() {
       </Card>
 
       <Card>
-        <h2 className="font-bold text-slate-800 mb-2">🌐 局域网同步</h2>
+        <h2 className="font-bold text-slate-800 mb-2">🌐 服务器数据</h2>
         <p className="text-xs text-slate-500 mb-3">
-          在电脑上双击《启动学习助手.bat》启动服务器，手机连<b>同一 Wi-Fi</b> 后打开电脑上显示的地址（如 http://192.168.x.x:4173），两端学习记录即自动双向同步（打开页面时、联网恢复时、每 5 分钟各同步一次）。
+          学习记录保存到部署服务器的 PostgreSQL 数据库中。浏览器只读取和提交数据，不再把学习记录存到本机 IndexedDB，也不再支持离线学习。
         </p>
 
         {syncStatus.supported === null && (
-          <div className="text-xs text-slate-500 rounded-lg px-3 py-2 bg-slate-50">正在检测同步服务器…</div>
+          <div className="text-xs text-slate-500 rounded-lg px-3 py-2 bg-slate-50">正在连接服务器…</div>
         )}
 
         {syncStatus.supported === false && (
           <div className="text-xs text-amber-700 rounded-lg px-3 py-2 bg-amber-50">
-            {syncStatus.message || '未检测到局域网同步服务器'}。当前页面若由 GitHub Pages 等静态托管提供，仅支持下方「数据备份」手动导入导出。
+            {syncStatus.message || '未连接到服务器'} 请通过部署后的服务器地址访问应用。
           </div>
         )}
 
@@ -158,21 +233,7 @@ export default function Settings() {
                 disabled={syncStatus.syncing}
                 className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
               >
-                {syncStatus.syncing ? '同步中…' : '🔄 立即同步'}
-              </button>
-              <button
-                onClick={() => confirm('确定用电脑端数据覆盖本机数据吗？本机未同步的新记录会丢失。') && syncPullOverwrite()}
-                disabled={syncStatus.syncing}
-                className="border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-600 disabled:opacity-50"
-              >
-                ⬇️ 用电脑数据覆盖本机
-              </button>
-              <button
-                onClick={() => confirm('确定用本机数据覆盖电脑端数据吗？电脑端未同步的新记录会丢失。') && syncPushOverwrite()}
-                disabled={syncStatus.syncing}
-                className="border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-600 disabled:opacity-50"
-              >
-                ⬆️ 用本机覆盖电脑
+                {syncStatus.syncing ? '刷新中…' : '🔄 从服务器刷新'}
               </button>
             </div>
           </div>
@@ -181,7 +242,7 @@ export default function Settings() {
 
       <Card>
         <h2 className="font-bold text-slate-800 mb-2">数据备份</h2>
-        <p className="text-xs text-slate-500 mb-3">学习数据保存在本机浏览器中。换设备/清缓存前请先导出备份。</p>
+        <p className="text-xs text-slate-500 mb-3">学习数据保存在服务器 PostgreSQL 中。这里的导入会覆盖服务器数据。</p>
         <div className="flex flex-wrap gap-2">
           <button onClick={doExport} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">📤 导出备份</button>
           <label className="border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-600 cursor-pointer">
@@ -201,7 +262,7 @@ export default function Settings() {
         <p className="text-xs text-slate-500 leading-relaxed">
           学位英语备考助手 v0.1.0 · 面向四川师范大学学位英语考试
           <br />内置 1600+ 大纲词、600+ 原创题目、12 节语法、5 套模拟卷
-          <br />数据本地存储（IndexedDB），可安装为 APP 离线使用
+          <br />数据存储在部署服务器 PostgreSQL 中，需要连接服务器使用
         </p>
       </Card>
     </div>

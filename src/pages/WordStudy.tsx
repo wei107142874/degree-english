@@ -44,7 +44,7 @@ export default function WordStudy() {
     })
   }, [states])
 
-  // 固定随机词序：种子持久化在设置里（IndexedDB + 局域网同步 + 备份），
+  // 固定随机词序：种子持久化在服务器设置里（PostgreSQL + 备份），
   // 电脑与手机同种子 → 完全一致的顺序，且不会随会话变化。
   const orderIndex = useMemo(
     () => buildOrderIndex(ALL_WORDS, settings.wordOrderSeed ?? WORD_ORDER_SEED),

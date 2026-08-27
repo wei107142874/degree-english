@@ -27,6 +27,8 @@ export default function ReviewSession() {
   // 遮罩单词：正面只显示中文释义，点击才显示英文（回忆拼写用）
   const [maskWord, setMaskWord] = useState(false)
   const [dictationOn, setDictationOn] = useState(false)
+  const [dictationAutoSpeak, setDictationAutoSpeak] = useState(true)
+  const [started, setStarted] = useState(false)
   const [dictation, setDictation] = useState('')
   const [doneCount, setDoneCount] = useState(0)
   const [sessionCorrect, setSessionCorrect] = useState(0)
@@ -58,6 +60,7 @@ export default function ReviewSession() {
     setIdx(0)
     setFlipped(false)
     setDictation('')
+    setStarted(false)
     setDoneCount(0)
     setSessionCorrect(0)
     setFinished(false)
@@ -94,9 +97,10 @@ export default function ReviewSession() {
 
   // 每张新卡片自动朗读一遍（遮罩单词、手机遥控本机静音时不自动读）
   useEffect(() => {
-    if (current && !maskWord && !remoteOn) void speak(current.spelling)
+    if (!current || !started || remoteOn) return
+    if (!maskWord || (dictationOn && dictationAutoSpeak)) void speak(current.spelling)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.id, maskWord, remoteOn])
+  }, [current?.id, started, maskWord, dictationOn, dictationAutoSpeak, remoteOn])
 
   const next = () => {
     if (idx + 1 >= queue.length) { setFinished(true); return }
@@ -144,12 +148,12 @@ export default function ReviewSession() {
   ctlRef.current = { continueReview, restartAll, broadcastState, grade }
 
   useEffect(() => {
-    if (!controlReady || remoteOn || !current) return
+    if (!controlReady || remoteOn || !current || !started) return
     broadcastState()
     const t = setInterval(broadcastState, 5000)
     return () => clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controlReady, remoteOn, current?.id, flipped, maskWord, idx, queue.length, finished, doneCount, sessionCorrect, progressText, hasMore, states])
+  }, [controlReady, remoteOn, current?.id, started, flipped, maskWord, idx, queue.length, finished, doneCount, sessionCorrect, progressText, hasMore, states])
 
   // 电脑端：接收手机指令并执行（本机为遥控端时不接收，避免双重操作）
   useEffect(() => {
@@ -414,24 +418,53 @@ export default function ReviewSession() {
         <span>{progressText}{markedInQueue > 0 && <span className="ml-2 text-amber-600">本批含 ⭐ {markedInQueue} 个重点</span>}</span>
         <div className="flex items-center gap-3">
           {maskWord && (
-            <label className="flex items-center gap-1.5 text-slate-600">
-              <input
-                type="checkbox"
-                checked={dictationOn}
-                onChange={e => { setDictationOn(e.target.checked); setDictation('') }}
-                className="h-4 w-4 rounded border-slate-300"
-              />
-              单词默写
-            </label>
+            <>
+              <label className="flex items-center gap-1.5 text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={dictationOn}
+                  onChange={e => { setDictationOn(e.target.checked); setDictation('') }}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                单词默写
+              </label>
+              {dictationOn && (
+                <label className="flex items-center gap-1.5 text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={dictationAutoSpeak}
+                    onChange={e => setDictationAutoSpeak(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                  自动发音
+                </label>
+              )}
+            </>
           )}
           <button
             onClick={() => { setMaskWord(m => !m); setFlipped(false); setDictation('') }}
             className={maskWord ? 'text-amber-600 font-medium' : 'text-blue-600'}
             title="遮罩单词：正面只显示中文释义，点击才显示英文单词"
           >{maskWord ? '👁 单词' : '🔒 单词'}</button>
+          {!started && (
+            <button
+              onClick={() => setStarted(true)}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium"
+            >
+              放开卡片遮罩
+            </button>
+          )}
         </div>
       </div>
 
+      {!started ? (
+        <button
+          aria-label="放开卡片遮罩"
+          onClick={() => setStarted(true)}
+          className="block w-full min-h-72 bg-white rounded-2xl shadow-md border border-slate-200 cursor-pointer"
+        />
+      ) : (
+        <>
       <div
         className="min-h-72 bg-white rounded-2xl shadow-md border border-slate-200 flex flex-col p-6 cursor-pointer select-none"
         onClick={() => setFlipped(f => !f)}
@@ -517,8 +550,14 @@ export default function ReviewSession() {
         <button onClick={() => grade(true)} className="bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white py-3 rounded-xl font-medium">模糊</button>
         <button onClick={() => grade(true)} className="bg-green-600 hover:bg-green-700 active:bg-green-800 text-white py-3 rounded-xl font-medium">认识</button>
       </div>
+        </>
+      )}
     </div>
   )
+}
+
+function normalizeDictation(s: string): string {
+  return s.trim().toLowerCase()
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -528,8 +567,4 @@ function shuffle<T>(arr: T[]): T[] {
     const t = a[i]; a[i] = a[j]; a[j] = t
   }
   return a
-}
-
-function normalizeDictation(s: string): string {
-  return s.trim().toLowerCase()
 }

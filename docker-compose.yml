@@ -1,0 +1,16 @@
+services:
+  english-learn:
+    build: .
+    container_name: english-learn
+    user: "1000:1000"
+    restart: unless-stopped
+    environment:
+      PGHOST: "47.108.154.80"
+      PGPORT: "5432"
+      PGUSER: "postgres"
+      PGPASSWORD: "postgres123"
+      PGDATABASE: "postgres"
+    ports:
+      - "4173:4173"
+    volumes:
+      - /home/admin/syncthing-data:/app/data

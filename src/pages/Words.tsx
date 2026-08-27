@@ -4,8 +4,8 @@ import { ALL_WORDS, TIER_LABELS, searchWords } from '../data/words'
 import type { Word } from '../types'
 import { useSrsStore } from '../store/useSrsStore'
 import { useSettingsStore } from '../store/useSettingsStore'
-import { WORD_ORDER_SEED, buildOrderIndex } from '../lib/wordOrder'
-import { badgeLevel, dateOfTs, todayStamp, countReviewedToday } from '../lib/srs'
+import { WORD_ORDER_SEED, buildOrderIndex, seededShuffle } from '../lib/wordOrder'
+import { badgeLevel, todayStamp, countReviewedToday } from '../lib/srs'
 import { Card, ProgressBar, speak } from '../components/common'
 
 const PAGE_SIZE = 100
@@ -14,13 +14,14 @@ export default function Words() {
   const [q, setQ] = useState('')
   const [tier, setTier] = useState<number | null>(null)
   const [learnedFilter, setLearnedFilter] = useState<'all' | 'new' | 'learned'>('all')
+  const [markedOnly, setMarkedOnly] = useState(false)
+  const [markedSnapshot, setMarkedSnapshot] = useState<Set<string>>(new Set())
   const [page, setPage] = useState(0)
+  const [localShuffleSeed, setLocalShuffleSeed] = useState<string | null>(null)
   // 遮罩模式：maskMean=遮住释义留单词；maskWord=遮住单词留释义。单击显示/再单击隐藏
   const [maskMean, setMaskMean] = useState(false)
   const [maskWord, setMaskWord] = useState(false)
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
-  // 已学分组折叠状态
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const states = useSrsStore(s => s.states)
   const toggleMark = useSrsStore(s => s.toggleMark)
   const settings = useSettingsStore(s => s.settings)
@@ -28,52 +29,24 @@ export default function Words() {
   // 列表顺序与「开始学习」一致：同一个固定随机词序（同一种子）
   const orderedWords = useMemo(() => {
     const idx = buildOrderIndex(ALL_WORDS, settings.wordOrderSeed ?? WORD_ORDER_SEED)
-    return [...ALL_WORDS].sort((a, b) => (idx.get(a.id) ?? 0) - (idx.get(b.id) ?? 0))
-  }, [settings.wordOrderSeed])
+    const ordered = [...ALL_WORDS].sort((a, b) => (idx.get(a.id) ?? 0) - (idx.get(b.id) ?? 0))
+    return localShuffleSeed ? seededShuffle(ordered, localShuffleSeed) : ordered
+  }, [settings.wordOrderSeed, localShuffleSeed])
 
   const results = useMemo(() => {
     const base = searchWords(q, tier, orderedWords)
-    if (learnedFilter === 'all') return base
     return base.filter(w => {
+      if (markedOnly && !markedSnapshot.has(w.id)) return false
+      if (learnedFilter === 'all') return true
       const lv = states[w.id]?.level ?? 0
       return learnedFilter === 'learned' ? lv >= 1 : lv === 0
     })
-  }, [q, tier, learnedFilter, states, orderedWords])
+  }, [q, tier, learnedFilter, markedOnly, markedSnapshot, states, orderedWords])
   const pageItems = results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
   const learned = Object.values(states).filter(s => s.level >= 1).length
   const markedCount = Object.values(states).filter(s => s.marked).length
   const reviewedToday = countReviewedToday(Object.values(states), todayStamp())
   const totalPages = Math.max(1, Math.ceil(results.length / PAGE_SIZE))
-
-  // 已学单词按学习日期分组（今天/昨天/M月D日/更早），类似百词斩
-  const today = todayStamp()
-  const yester = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return dateOfTs(d.getTime()) })()
-  const groups = useMemo(() => {
-    if (learnedFilter !== 'learned') return [] as { key: string; label: string; words: Word[] }[]
-    const map = new Map<string, Word[]>()
-    for (const w of results) {
-      const st = states[w.id]
-      const key = st?.learnedAt ? dateOfTs(st.learnedAt) : 'older'
-      const arr = map.get(key)
-      if (arr) arr.push(w)
-      else map.set(key, [w])
-    }
-    const keys = [...map.keys()].sort((a, b) => {
-      if (a === 'older') return 1
-      if (b === 'older') return -1
-      return b.localeCompare(a) // YYYY-MM-DD 字符串比较 = 日期倒序
-    })
-    const label = (k: string): string => {
-      if (k === 'older') return '更早'
-      if (k === today) return '今天'
-      if (k === yester) return '昨天'
-      const d = new Date(k + 'T00:00:00')
-      return d.getFullYear() === new Date().getFullYear()
-        ? `${d.getMonth() + 1}月${d.getDate()}日`
-        : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
-    }
-    return keys.map(k => ({ key: k, label: label(k), words: map.get(k)! }))
-  }, [results, states, learnedFilter, today, yester])
 
   const toggleReveal = (id: string) => {
     setRevealed(prev => {
@@ -83,15 +56,6 @@ export default function Words() {
       return s
     })
   }
-  const toggleCollapse = (key: string) => {
-    setCollapsed(prev => {
-      const s = new Set(prev)
-      if (s.has(key)) s.delete(key)
-      else s.add(key)
-      return s
-    })
-  }
-
   const renderItem = (w: Word) => {
     const st = states[w.id]
     const cc = st ? Math.max(0, st.reviewCount - st.wrongCount) : 0
@@ -134,12 +98,14 @@ export default function Words() {
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
           <button
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); void toggleMark(w.id) }}
             className={`w-10 h-10 flex items-center justify-center rounded-full text-xl leading-none transition-colors ${
               st?.marked ? 'text-amber-500 bg-amber-50' : 'text-slate-300 hover:text-amber-400 hover:bg-amber-50'
             }`}
             title={st?.marked ? '已标记为重点记忆，点击取消' : '没记住？标记为重点记忆'}
             aria-label={st?.marked ? '取消重点记忆标记' : '标记为重点记忆'}
+            aria-pressed={!!st?.marked}
           >{st?.marked ? '⭐' : '☆'}</button>
           <button
             onClick={(e) => { e.stopPropagation(); speak(w.spelling) }}
@@ -213,6 +179,28 @@ export default function Words() {
         ))}
         <span className="mx-1 text-slate-200">|</span>
         <button
+          onClick={() => {
+            setLocalShuffleSeed(seed => seed ? null : String(Date.now()))
+            setPage(0)
+          }}
+          className={`px-3 py-2 rounded-lg text-sm ${
+            localShuffleSeed ? 'bg-blue-600 text-white' : 'bg-white border border-slate-300 text-slate-600'
+          }`}
+          title="只在当前设备临时打乱列表顺序，不影响学习顺序"
+        >{localShuffleSeed ? '↩ 固定顺序' : '🔀 乱序'}</button>
+        <button
+          onClick={() => {
+            const next = !markedOnly
+            setMarkedOnly(next)
+            setMarkedSnapshot(next ? new Set(Object.values(states).filter(s => s.marked).map(s => s.wordId)) : new Set())
+            setPage(0)
+          }}
+          className={`px-3 py-2 rounded-lg text-sm ${
+            markedOnly ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
+          }`}
+          title="只显示已收藏的单词"
+        >⭐ 收藏</button>
+        <button
           onClick={() => { setMaskMean(m => !m); setRevealed(new Set()) }}
           className={`px-3 py-2 rounded-lg text-sm ${
             maskMean ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
@@ -228,38 +216,14 @@ export default function Words() {
         >{maskWord ? '👁 单词' : '🔒 单词'}</button>
       </div>
 
-      {learnedFilter === 'learned' && groups.length > 0 ? (
-        // 已学视图：按日期分组
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          {groups.map(g => (
-            <div key={g.key}>
-              <button
-                onClick={() => toggleCollapse(g.key)}
-                className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700"
-              >
-                <span>🗓 {g.label}</span>
-                <span className="text-xs font-normal text-slate-500">
-                  {g.words.length} 个 {collapsed.has(g.key) ? '▸' : '▾'}
-                </span>
-              </button>
-              {!collapsed.has(g.key) && (
-                <ul className="divide-y divide-slate-100">
-                  {g.words.map(renderItem)}
-                </ul>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          {pageItems.length === 0 && <div className="p-8 text-center text-slate-400">没有找到匹配的单词</div>}
-          <ul className="divide-y divide-slate-100">
-            {pageItems.map(renderItem)}
-          </ul>
-        </div>
-      )}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        {pageItems.length === 0 && <div className="p-8 text-center text-slate-400">没有找到匹配的单词</div>}
+        <ul className="divide-y divide-slate-100">
+          {pageItems.map(renderItem)}
+        </ul>
+      </div>
 
-      {learnedFilter !== 'learned' && totalPages > 1 && (
+      {totalPages > 1 && (
         <div className="flex justify-center gap-2">
           <button disabled={page === 0} onClick={() => setPage(p => p - 1)} className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm disabled:opacity-40">上一页</button>
           <span className="px-3 py-1.5 text-sm text-slate-500">{page + 1} / {totalPages}</span>
