@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ALL_WORDS, TIER_LABELS, searchWords } from '../data/words'
 import type { Word } from '../types'
@@ -6,27 +6,37 @@ import { useSrsStore } from '../store/useSrsStore'
 import { useSettingsStore } from '../store/useSettingsStore'
 import { WORD_ORDER_SEED, buildOrderIndex, seededShuffle } from '../lib/wordOrder'
 import { badgeLevel, todayStamp, countReviewedToday } from '../lib/srs'
-import { Card, ProgressBar, speak } from '../components/common'
+import { ProgressBar, speak } from '../components/common'
 
-const PAGE_SIZE = 100
+type LearnedFilter = 'all' | 'new' | 'learned'
+
+const PAGE_SIZE = 80
+
+const learnedLabels: Record<LearnedFilter, string> = {
+  all: '全部',
+  new: '未学',
+  learned: '已学',
+}
 
 export default function Words() {
   const [q, setQ] = useState('')
+  const deferredQ = useDeferredValue(q)
   const [tier, setTier] = useState<number | null>(null)
-  const [learnedFilter, setLearnedFilter] = useState<'all' | 'new' | 'learned'>('all')
+  const [learnedFilter, setLearnedFilter] = useState<LearnedFilter>('all')
   const [markedOnly, setMarkedOnly] = useState(false)
   const [markedSnapshot, setMarkedSnapshot] = useState<Set<string>>(new Set())
-  const [page, setPage] = useState(0)
   const [localShuffleSeed, setLocalShuffleSeed] = useState<string | null>(null)
-  // 遮罩模式：maskMean=遮住释义留单词；maskWord=遮住单词留释义。单击显示/再单击隐藏
+  const [reverseOrder, setReverseOrder] = useState(false)
   const [maskMean, setMaskMean] = useState(false)
   const [maskWord, setMaskWord] = useState(false)
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const loadMoreRef = useRef<HTMLDivElement | null>(null)
+
   const states = useSrsStore(s => s.states)
   const toggleMark = useSrsStore(s => s.toggleMark)
   const settings = useSettingsStore(s => s.settings)
 
-  // 列表顺序与「开始学习」一致：同一个固定随机词序（同一种子）
   const orderedWords = useMemo(() => {
     const idx = buildOrderIndex(ALL_WORDS, settings.wordOrderSeed ?? WORD_ORDER_SEED)
     const ordered = [...ALL_WORDS].sort((a, b) => (idx.get(a.id) ?? 0) - (idx.get(b.id) ?? 0))
@@ -34,19 +44,45 @@ export default function Words() {
   }, [settings.wordOrderSeed, localShuffleSeed])
 
   const results = useMemo(() => {
-    const base = searchWords(q, tier, orderedWords)
-    return base.filter(w => {
+    const base = searchWords(deferredQ, tier, orderedWords).filter(w => {
       if (markedOnly && !markedSnapshot.has(w.id)) return false
       if (learnedFilter === 'all') return true
       const lv = states[w.id]?.level ?? 0
       return learnedFilter === 'learned' ? lv >= 1 : lv === 0
     })
-  }, [q, tier, learnedFilter, markedOnly, markedSnapshot, states, orderedWords])
-  const pageItems = results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+    return reverseOrder ? [...base].reverse() : base
+  }, [deferredQ, tier, learnedFilter, markedOnly, markedSnapshot, states, orderedWords, reverseOrder])
+
+  const visibleResults = useMemo(() => results.slice(0, visibleCount), [results, visibleCount])
+  const hasMore = visibleCount < results.length
+
   const learned = Object.values(states).filter(s => s.level >= 1).length
   const markedCount = Object.values(states).filter(s => s.marked).length
   const reviewedToday = countReviewedToday(Object.values(states), todayStamp())
-  const totalPages = Math.max(1, Math.ceil(results.length / PAGE_SIZE))
+  const progressValue = learned / ALL_WORDS.length
+  const activeFilterCount =
+    (q.trim() ? 1 : 0) +
+    (tier !== null ? 1 : 0) +
+    (learnedFilter !== 'all' ? 1 : 0) +
+    (markedOnly ? 1 : 0)
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE)
+    setRevealed(new Set())
+  }, [deferredQ, tier, learnedFilter, markedOnly, localShuffleSeed, reverseOrder])
+
+  useEffect(() => {
+    if (!hasMore || !loadMoreRef.current || typeof IntersectionObserver === 'undefined') return
+
+    const observer = new IntersectionObserver(entries => {
+      if (entries[0]?.isIntersecting) {
+        setVisibleCount(count => Math.min(count + PAGE_SIZE, results.length))
+      }
+    }, { rootMargin: '360px 0px' })
+
+    observer.observe(loadMoreRef.current)
+    return () => observer.disconnect()
+  }, [hasMore, results.length])
 
   const toggleReveal = (id: string) => {
     setRevealed(prev => {
@@ -56,60 +92,85 @@ export default function Words() {
       return s
     })
   }
-  const renderItem = (w: Word) => {
+
+  const toggleMarkedOnly = () => {
+    const next = !markedOnly
+    setMarkedOnly(next)
+    setMarkedSnapshot(next ? new Set(Object.values(states).filter(s => s.marked).map(s => s.wordId)) : new Set())
+  }
+
+  const clearFilters = () => {
+    setQ('')
+    setTier(null)
+    setLearnedFilter('all')
+    setMarkedOnly(false)
+    setMarkedSnapshot(new Set())
+  }
+
+  const renderWord = (w: Word, index: number) => {
     const st = states[w.id]
-    const cc = st ? Math.max(0, st.reviewCount - st.wrongCount) : 0
-    const lv = badgeLevel(cc)
+    const correctCount = st ? Math.max(0, st.reviewCount - st.wrongCount) : 0
+    const level = badgeLevel(correctCount)
     const anyMask = maskMean || maskWord
     const showWord = !maskWord || revealed.has(w.id)
     const showMean = !maskMean || revealed.has(w.id)
+    const displayIndex = index + 1
+
     return (
       <li
         key={w.id}
         onClick={() => { if (anyMask) toggleReveal(w.id) }}
-        className={`flex items-center gap-3 px-4 py-3 hover:bg-slate-50 ${anyMask ? 'cursor-pointer' : ''}`}
+        className={`group grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 transition-all duration-150 hover:bg-slate-50 active:bg-blue-50/60 sm:px-4 sm:py-3.5 ${
+          anyMask ? 'cursor-pointer' : ''
+        }`}
       >
-        <div className="flex-1 min-w-0">
+        <div className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500 sm:flex">
+          {displayIndex}
+        </div>
+
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {showWord ? (
               <>
-                <span className="font-semibold text-slate-800">{w.spelling}</span>
+                <span className="text-base font-bold leading-tight text-slate-900 sm:text-lg">{w.spelling}</span>
                 {w.phonetic && <span className="text-xs text-slate-400">{w.phonetic}</span>}
               </>
             ) : (
-              <span className="text-sm text-slate-300 select-none">🔒 点击显示单词</span>
+              <span className="text-sm font-medium text-slate-300 select-none">点击显示单词</span>
             )}
-            {w.pos && <span className="text-xs text-blue-500">{w.pos}</span>}
-            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-              w.tier === 1 ? 'bg-red-100 text-red-600' : w.tier === 2 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-500'
+            {w.pos && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600">{w.pos}</span>}
+            <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+              w.tier === 1 ? 'bg-red-50 text-red-600' : w.tier === 2 ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-500'
             }`}>{TIER_LABELS[w.tier]}</span>
             {st && st.level >= 1 && (
               <span
-                className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-600"
-                title={`正确认识 ${cc} 次`}
-              >已学{lv >= 1 ? ` Lv${lv}` : ''}</span>
+                className="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600"
+                title={`正确认识 ${correctCount} 次`}
+              >已学{level >= 1 ? ` Lv${level}` : ''}</span>
             )}
+            {st?.marked && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-600">重点</span>}
           </div>
           {showMean ? (
-            <div className="text-sm text-slate-500 truncate">{w.meanings.join('；')}</div>
+            <div className="mt-1 line-clamp-2 text-sm leading-5 text-slate-500">{w.meanings.join('；')}</div>
           ) : (
-            <div className="text-sm text-slate-300 truncate select-none">🔒 点击显示释义</div>
+            <div className="mt-1 text-sm leading-5 text-slate-300 select-none">点击显示释义</div>
           )}
         </div>
-        <div className="flex items-center gap-0.5 shrink-0">
+
+        <div className="flex shrink-0 items-center gap-1">
           <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); void toggleMark(w.id) }}
-            className={`w-10 h-10 flex items-center justify-center rounded-full text-xl leading-none transition-colors ${
-              st?.marked ? 'text-amber-500 bg-amber-50' : 'text-slate-300 hover:text-amber-400 hover:bg-amber-50'
+            className={`flex h-10 w-10 items-center justify-center rounded-full text-xl leading-none transition-all active:scale-90 ${
+              st?.marked ? 'bg-amber-50 text-amber-500' : 'text-slate-300 hover:bg-amber-50 hover:text-amber-400'
             }`}
-            title={st?.marked ? '已标记为重点记忆，点击取消' : '没记住？标记为重点记忆'}
+            title={st?.marked ? '已标记为重点记忆，点击取消' : '标记为重点记忆'}
             aria-label={st?.marked ? '取消重点记忆标记' : '标记为重点记忆'}
             aria-pressed={!!st?.marked}
-          >{st?.marked ? '⭐' : '☆'}</button>
+          >{st?.marked ? '★' : '☆'}</button>
           <button
             onClick={(e) => { e.stopPropagation(); speak(w.spelling) }}
-            className="w-10 h-10 flex items-center justify-center rounded-full text-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+            className="flex h-10 w-10 items-center justify-center rounded-full text-lg text-slate-400 transition-all hover:bg-blue-50 hover:text-blue-600 active:scale-90"
             title="朗读"
             aria-label="朗读"
           >🔊</button>
@@ -119,117 +180,194 @@ export default function Words() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">📚 背单词</h1>
-        <div className="flex items-center gap-2">
-          <Link to="/study" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium">
-            开始学习 →
-          </Link>
-          <Link to="/review" className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium">
-            🔁 复习
-          </Link>
-        </div>
-      </div>
+    <div className="space-y-4 lg:grid lg:grid-cols-[280px_minmax(0,1fr)] lg:items-start lg:gap-5 lg:space-y-0">
+      <section className="space-y-4 lg:sticky lg:top-8">
+        <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200 sm:p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium text-blue-600">词库</p>
+              <h1 className="mt-1 text-2xl font-bold text-slate-900">背单词</h1>
+            </div>
+            <div className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">
+              {results.length} 词
+            </div>
+          </div>
 
-      <Card>
-        <div className="text-sm text-slate-600 mb-2">
-          已学 {learned} / {ALL_WORDS.length} 词
-          {markedCount > 0 && <span className="ml-2 text-amber-600">⭐ 重点记忆 {markedCount} 个</span>}
-          {reviewedToday > 0 && <span className="ml-2 text-green-600">· 今日复习 {reviewedToday} 个</span>}
-        </div>
-        <ProgressBar value={learned / ALL_WORDS.length} />
-      </Card>
+          <div className="mt-3 sm:mt-4">
+            <div className="mb-2 flex items-end justify-between">
+              <div className="text-sm text-slate-500">学习进度</div>
+              <div className="text-sm font-semibold text-slate-800">{learned} / {ALL_WORDS.length}</div>
+            </div>
+            <ProgressBar value={progressValue} />
+          </div>
 
-      <div className="flex flex-wrap gap-2 items-center">
-        <input
-          value={q}
-          onChange={e => { setQ(e.target.value); setPage(0) }}
-          placeholder="搜索单词或中文…"
-          className="flex-1 min-w-[180px] px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <div className="flex gap-1">
-          <button
-            onClick={() => { setTier(null); setPage(0) }}
-            className={`px-3 py-2 rounded-lg text-sm ${
-              tier === null ? 'bg-blue-600 text-white' : 'bg-white border border-slate-300 text-slate-600'
-            }`}
-          >全部</button>
-          {[1, 2, 3].map(t => (
+          <div className="mt-4 hidden grid-cols-3 gap-2 text-center sm:grid">
+            <StatPill label="重点" value={markedCount} tone="amber" />
+            <StatPill label="今日复习" value={reviewedToday} tone="emerald" />
+            <StatPill label="筛选" value={activeFilterCount} tone="blue" />
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <Link to="/study" className="rounded-lg bg-blue-600 px-3 py-2.5 text-center text-sm font-semibold text-white transition-all hover:bg-blue-700 active:scale-[0.98] sm:py-3">
+              开始学习
+            </Link>
+            <Link to="/review" className="rounded-lg bg-amber-500 px-3 py-2.5 text-center text-sm font-semibold text-white transition-all hover:bg-amber-600 active:scale-[0.98] sm:py-3">
+              复习
+            </Link>
+          </div>
+        </div>
+
+        <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200 sm:p-5">
+          <div className="relative">
+            <input
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              placeholder="搜索单词或中文..."
+              className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 pr-10 text-sm outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100 sm:h-11"
+            />
+            {q && (
+              <button
+                onClick={() => setQ('')}
+              className="absolute right-1 top-1 flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-600 sm:right-1.5 sm:top-1.5"
+                aria-label="清空搜索"
+                title="清空搜索"
+              >×</button>
+            )}
+          </div>
+
+          <FilterBlock title="档位">
+            <Chip active={tier === null} onClick={() => setTier(null)}>全部</Chip>
+            {[1, 2, 3].map(t => (
+              <Chip key={t} active={tier === t} onClick={() => setTier(t)}>{TIER_LABELS[t]}</Chip>
+            ))}
+          </FilterBlock>
+
+          <FilterBlock title="状态">
+            {(['all', 'new', 'learned'] as const).map(f => (
+              <Chip key={f} active={learnedFilter === f} onClick={() => setLearnedFilter(f)}>
+                {learnedLabels[f]}
+              </Chip>
+            ))}
+          </FilterBlock>
+
+          <FilterBlock title="排列">
+            <Chip
+              active={!localShuffleSeed && !reverseOrder}
+              onClick={() => { setLocalShuffleSeed(null); setReverseOrder(false) }}
+            >顺序</Chip>
+            <Chip active={reverseOrder} onClick={() => setReverseOrder(v => !v)}>倒序</Chip>
+            <Chip
+              active={!!localShuffleSeed}
+              onClick={() => setLocalShuffleSeed(seed => seed ? null : String(Date.now()))}
+            >乱序</Chip>
+          </FilterBlock>
+
+          <div className="mt-3 grid grid-cols-3 gap-2 sm:mt-4">
+            <ToggleButton active={markedOnly} onClick={toggleMarkedOnly}>收藏</ToggleButton>
+            <ToggleButton active={maskMean} onClick={() => { setMaskMean(m => !m); setRevealed(new Set()) }}>释义</ToggleButton>
+            <ToggleButton active={maskWord} onClick={() => { setMaskWord(m => !m); setRevealed(new Set()) }}>单词</ToggleButton>
+          </div>
+
+          {activeFilterCount > 0 && (
             <button
-              key={t}
-              onClick={() => { setTier(t); setPage(0) }}
-              className={`px-3 py-2 rounded-lg text-sm ${
-                tier === t ? 'bg-blue-600 text-white' : 'bg-white border border-slate-300 text-slate-600'
-              }`}
-            >{TIER_LABELS[t]}</button>
-          ))}
+              onClick={clearFilters}
+              className="mt-3 w-full rounded-lg border border-slate-200 py-2.5 text-sm font-medium text-slate-600 transition-all hover:bg-slate-50 active:scale-[0.98]"
+            >
+              清除筛选
+            </button>
+          )}
         </div>
-      </div>
+      </section>
 
-      <div className="flex flex-wrap gap-1 items-center">
-        {(['all', 'new', 'learned'] as const).map(f => (
+      <section className="min-w-0 space-y-3">
+        <div className="sticky top-[56px] z-10 flex items-center justify-between rounded-lg bg-white/95 px-4 py-3 shadow-sm ring-1 ring-slate-200 backdrop-blur lg:top-8">
+          <div>
+            <div className="text-sm font-semibold text-slate-900">单词列表</div>
+            <div className="text-xs text-slate-500">
+              {reverseOrder ? '倒序' : localShuffleSeed ? '乱序' : '固定顺序'} · {learnedLabels[learnedFilter]} · 已显示 {visibleResults.length} / {results.length}
+            </div>
+          </div>
           <button
-            key={f}
-            onClick={() => { setLearnedFilter(f); setPage(0) }}
-            className={`px-3 py-2 rounded-lg text-sm ${
-              learnedFilter === f ? 'bg-green-600 text-white' : 'bg-white border border-slate-300 text-slate-600'
+            data-testid="words-reverse-toggle"
+            onClick={() => setReverseOrder(v => !v)}
+            className={`rounded-lg px-3 py-2 text-sm font-medium transition-all active:scale-[0.96] ${
+              reverseOrder ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
-          >{f === 'all' ? '全部' : f === 'new' ? '未学' : '✅ 已学'}</button>
-        ))}
-        <span className="mx-1 text-slate-200">|</span>
-        <button
-          onClick={() => {
-            setLocalShuffleSeed(seed => seed ? null : String(Date.now()))
-            setPage(0)
-          }}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            localShuffleSeed ? 'bg-blue-600 text-white' : 'bg-white border border-slate-300 text-slate-600'
-          }`}
-          title="只在当前设备临时打乱列表顺序，不影响学习顺序"
-        >{localShuffleSeed ? '↩ 固定顺序' : '🔀 乱序'}</button>
-        <button
-          onClick={() => {
-            const next = !markedOnly
-            setMarkedOnly(next)
-            setMarkedSnapshot(next ? new Set(Object.values(states).filter(s => s.marked).map(s => s.wordId)) : new Set())
-            setPage(0)
-          }}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            markedOnly ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
-          }`}
-          title="只显示已收藏的单词"
-        >⭐ 收藏</button>
-        <button
-          onClick={() => { setMaskMean(m => !m); setRevealed(new Set()) }}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            maskMean ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
-          }`}
-          title="开启后释义隐藏，只留英文单词，单击显示释义"
-        >{maskMean ? '👁 释义' : '🔒 释义'}</button>
-        <button
-          onClick={() => { setMaskWord(m => !m); setRevealed(new Set()) }}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            maskWord ? 'bg-amber-500 text-white' : 'bg-white border border-slate-300 text-slate-600'
-          }`}
-          title="开启后英文单词隐藏，只留中文释义，单击显示单词"
-        >{maskWord ? '👁 单词' : '🔒 单词'}</button>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        {pageItems.length === 0 && <div className="p-8 text-center text-slate-400">没有找到匹配的单词</div>}
-        <ul className="divide-y divide-slate-100">
-          {pageItems.map(renderItem)}
-        </ul>
-      </div>
-
-      {totalPages > 1 && (
-        <div className="flex justify-center gap-2">
-          <button disabled={page === 0} onClick={() => setPage(p => p - 1)} className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm disabled:opacity-40">上一页</button>
-          <span className="px-3 py-1.5 text-sm text-slate-500">{page + 1} / {totalPages}</span>
-          <button disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)} className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm disabled:opacity-40">下一页</button>
+            title="切换倒序排列"
+          >
+            {reverseOrder ? '倒序中' : '倒序'}
+          </button>
         </div>
-      )}
+
+        <div className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+          {results.length === 0 && (
+            <div className="px-6 py-12 text-center">
+              <div className="text-base font-semibold text-slate-700">没有找到匹配的单词</div>
+              <button onClick={clearFilters} className="mt-3 text-sm font-medium text-blue-600 hover:text-blue-700">清除筛选</button>
+            </div>
+          )}
+          <ul className="divide-y divide-slate-100">
+            {visibleResults.map(renderWord)}
+          </ul>
+          {hasMore && (
+            <div ref={loadMoreRef} className="px-4 py-5 text-center text-xs font-medium text-slate-400">
+              继续滑动加载更多
+            </div>
+          )}
+        </div>
+      </section>
     </div>
+  )
+}
+
+function StatPill({ label, value, tone }: { label: string; value: number; tone: 'amber' | 'blue' | 'emerald' }) {
+  const toneClass = {
+    amber: 'bg-amber-50 text-amber-700',
+    blue: 'bg-blue-50 text-blue-700',
+    emerald: 'bg-emerald-50 text-emerald-700',
+  }[tone]
+
+  return (
+    <div className={`rounded-lg px-2 py-2 ${toneClass}`}>
+      <div className="text-lg font-bold leading-none">{value}</div>
+      <div className="mt-1 text-[11px] font-medium">{label}</div>
+    </div>
+  )
+}
+
+function FilterBlock({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="mt-3 sm:mt-4">
+      <div className="mb-2 text-xs font-semibold text-slate-500">{title}</div>
+      <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`h-8 shrink-0 rounded-full px-3 text-sm font-medium transition-all active:scale-[0.96] sm:h-9 ${
+        active ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function ToggleButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`h-9 rounded-lg text-sm font-medium transition-all active:scale-[0.96] sm:h-10 ${
+        active ? 'bg-amber-500 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+      }`}
+    >
+      {children}
+    </button>
   )
 }

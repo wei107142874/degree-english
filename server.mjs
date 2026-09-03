@@ -20,14 +20,38 @@ const BASE = '/degree-english';
 const STORES = ['srs', 'attempts', 'plan', 'settings'];
 const DEFAULT_USER_ID = '魏勇';
 const LEGACY_USER_ID = 'main';
+const PGDATABASE = process.env.PGDATABASE || 'english_learn';
 
-const pool = new Pool({
+const pgConfig = {
   host: process.env.PGHOST,
   port: Number(process.env.PGPORT || 5432),
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
-  database: process.env.PGDATABASE || 'postgres',
-});
+};
+
+let pool;
+
+function quoteIdentifier(value) {
+  const id = String(value || '').trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) throw new Error(`Invalid PostgreSQL database name: ${id}`);
+  return `"${id.replace(/"/g, '""')}"`;
+}
+
+async function ensureDatabase() {
+  if (PGDATABASE === 'postgres') return;
+  const adminPool = new Pool({ ...pgConfig, database: 'postgres' });
+  try {
+    const { rows } = await adminPool.query('SELECT 1 FROM pg_database WHERE datname = $1', [PGDATABASE]);
+    if (rows.length > 0) return;
+    await adminPool.query(`CREATE DATABASE ${quoteIdentifier(PGDATABASE)}`);
+    console.log(`[data] created PostgreSQL database ${PGDATABASE}`);
+  } catch (e) {
+    if (e.code === '42P04') return;
+    throw e;
+  } finally {
+    await adminPool.end();
+  }
+}
 
 const keyOf = {
   srs: (r) => r?.wordId,
@@ -587,6 +611,8 @@ server.on('error', (e) => {
   throw e;
 });
 
+await ensureDatabase();
+pool = new Pool({ ...pgConfig, database: PGDATABASE });
 await initStorage();
 
 server.listen(PORT, HOST, () => {
@@ -594,6 +620,6 @@ server.listen(PORT, HOST, () => {
   console.log('  Degree English server started');
   console.log(`  URL:      http://localhost:${PORT}`);
   for (const ip of lanAddresses()) console.log(`  LAN URL:  http://${ip}:${PORT}`);
-  console.log(`  PostgreSQL: ${process.env.PGHOST}:${process.env.PGPORT || 5432}/${process.env.PGDATABASE || 'postgres'}`);
+  console.log(`  PostgreSQL: ${process.env.PGHOST}:${process.env.PGPORT || 5432}/${PGDATABASE}`);
   console.log('==========================================');
 });

@@ -4,3 +4,5 @@ dist
 .DS_Store
 # 局域网同步服务器数据（本机磁盘文件，不应提交）
 data/
+deploy.bat
+deploy.ps1

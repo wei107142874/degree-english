@@ -8,8 +8,8 @@ services:
       PGHOST: "47.108.154.80"
       PGPORT: "5432"
       PGUSER: "postgres"
-      PGPASSWORD: "postgres123"
-      PGDATABASE: "postgres"
+      PGPASSWORD: "${PGPASSWORD:?PGPASSWORD is required}"
+      PGDATABASE: "${PGDATABASE:-english_learn}"
     ports:
       - "4173:4173"
     volumes:
