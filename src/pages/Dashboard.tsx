@@ -7,6 +7,7 @@ import { useAttemptStore } from '../store/useAttemptStore'
 import { usePlanStore } from '../store/usePlanStore'
 import { useSettingsStore } from '../store/useSettingsStore'
 import { daysToExam, todayTask } from '../lib/planner'
+import { dailyNewWordsPlan, summarizeWordLearning } from '../lib/srs'
 import { Card, ProgressBar, Stat } from '../components/common'
 
 const SECTION_NAMES: Record<string, string> = {
@@ -16,14 +17,9 @@ const SECTION_NAMES: Record<string, string> = {
 
 export default function Dashboard() {
   const srsStates = useSrsStore(s => s.states)
-  const srsStats = useMemo(() => {
-    const states = Object.values(srsStates)
-    const learned = states.filter(s => s.level >= 1).length
-    const due = states.filter(s => s.level >= 1 && s.due <= Date.now()).length
-    return { learned, due }
-  }, [srsStates])
-  const due = srsStats.due
-  const learned = srsStats.learned
+  const wordStats = useMemo(() => summarizeWordLearning(Object.values(srsStates)), [srsStates])
+  const due = wordStats.due
+  const learned = wordStats.learned
   const attempts = useAttemptStore(s => s.attempts)
   const todayAnswered = useMemo(() => {
     const t = new Date().toDateString()
@@ -39,6 +35,10 @@ export default function Dashboard() {
   }, [attempts])
   const plan = usePlanStore(s => s.plan)
   const settings = useSettingsStore(s => s.settings)
+  const todayNewPlan = useMemo(
+    () => dailyNewWordsPlan(settings.dailyNewWords || 30, due),
+    [settings.dailyNewWords, due],
+  )
 
   const task = todayTask(plan)
   const days = daysToExam(settings.examDate)
@@ -95,7 +95,16 @@ export default function Dashboard() {
         </div>
         {task ? (
           <div className="space-y-2 text-sm">
-            <div className="flex justify-between"><span>📚 新词</span><span className="font-medium">{task.newWords} 个</span></div>
+            <div className="flex justify-between gap-3">
+              <span>📚 新词</span>
+              <span className="text-right font-medium">
+                {todayNewPlan.recommended} 个
+                {todayNewPlan.recommended !== todayNewPlan.base && <span className="ml-1 text-xs font-normal text-slate-400">/ 原计划 {todayNewPlan.base}</span>}
+              </span>
+            </div>
+            {todayNewPlan.recommended !== todayNewPlan.base && (
+              <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">{todayNewPlan.reason}</div>
+            )}
             <div className="flex justify-between"><span>🔁 复习</span><span className="font-medium">{due} 个（到期）</span></div>
             {task.grammarLessonId && <div className="flex justify-between"><span>📖 语法</span><span className="font-medium">1 节</span></div>}
             {task.practiceSection && <div className="flex justify-between"><span>✏️ 专项</span><span className="font-medium">{task.practiceCount} 题</span></div>}
@@ -106,8 +115,17 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-          <div className="text-sm text-slate-500">
-            还没有学习计划，<Link to="/plan" className="text-blue-600 underline">去生成计划</Link>，让每天的学习有方向。
+          <div className="space-y-3 text-sm text-slate-500">
+            <div className="rounded-lg bg-slate-50 px-3 py-2">
+              今日推荐新词 {todayNewPlan.recommended} 个，复习 {due} 个到期。
+            </div>
+            <div>
+              还没有学习计划，<Link to="/plan" className="text-blue-600 underline">去生成计划</Link>，让每天的学习有方向。
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Link to="/study" className="flex-1 text-center bg-blue-600 text-white py-2.5 rounded-lg text-sm">开始背单词</Link>
+              <Link to="/practice" className="flex-1 text-center border border-blue-300 text-blue-600 py-2.5 rounded-lg text-sm">专项练习</Link>
+            </div>
           </div>
         )}
       </Card>
@@ -138,6 +156,17 @@ export default function Dashboard() {
         </Card>
       </div>
 
+      <Card>
+        <h2 className="font-bold text-slate-800 mb-3">📊 单词记忆画像</h2>
+        <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
+          <MemoryMetric label="熟词" value={wordStats.mature} hint="等级 3+" tone="emerald" />
+          <MemoryMetric label="易忘词" value={wordStats.fragile} hint="低等级或答错" tone="amber" />
+          <MemoryMetric label="慢反应" value={wordStats.slowRecall} hint="犹豫认识" tone="blue" />
+          <MemoryMetric label="反复错" value={wordStats.repeatedWrong} hint="错误 2 次+" tone="red" />
+          <MemoryMetric label="平均反应" value={wordStats.averageResponseMs ? `${(wordStats.averageResponseMs / 1000).toFixed(1)}s` : '-'} hint="认识耗时" tone="slate" />
+        </div>
+      </Card>
+
       {/* 薄弱点 */}
       {weak.length > 0 && (
         <Card>
@@ -153,6 +182,24 @@ export default function Dashboard() {
           <Link to="/practice" className="text-sm text-blue-600 mt-3 inline-block">去针对性练习 →</Link>
         </Card>
       )}
+    </div>
+  )
+}
+
+function MemoryMetric({ label, value, hint, tone }: { label: string; value: React.ReactNode; hint: string; tone: 'emerald' | 'amber' | 'blue' | 'red' | 'slate' }) {
+  const toneClass = {
+    emerald: 'bg-emerald-50 text-emerald-700',
+    amber: 'bg-amber-50 text-amber-700',
+    blue: 'bg-blue-50 text-blue-700',
+    red: 'bg-red-50 text-red-700',
+    slate: 'bg-slate-50 text-slate-700',
+  }[tone]
+
+  return (
+    <div className={`rounded-lg px-3 py-3 ${toneClass}`}>
+      <div className="text-xl font-bold leading-none">{value}</div>
+      <div className="mt-1 font-medium">{label}</div>
+      <div className="mt-0.5 text-xs opacity-70">{hint}</div>
     </div>
   )
 }

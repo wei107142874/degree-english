@@ -1,22 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ALL_WORDS } from '../data/words'
-import type { Word } from '../types'
+import type { ReviewGrade, SrsState, Word } from '../types'
 import { useSrsStore } from '../store/useSrsStore'
+import { useSettingsStore } from '../store/useSettingsStore'
 import { speak } from '../components/common'
-import { todayStamp, countReviewedToday } from '../lib/srs'
+import { countReviewedToday, inferRecognitionGrade, isRememberedGrade, todayStamp } from '../lib/srs'
 import { onControl, sendControl, useControlAvailable } from '../control/remote'
 import type { ControlPayload, RemoteState } from '../control/remote'
+import { baiduTranslateUrl } from '../lib/dictionary'
 
-// 每批复习的词数（默认 50），「继续复习」接续下一批
-const BATCH_SIZE = 50
+// 每批复习的词数默认 100，可在复习页或设置页调整。
+const DEFAULT_REVIEW_BATCH_SIZE = 100
+type ReviewMode = 'all' | 'marked'
 
 export default function ReviewSession() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const reviewMode: ReviewMode = searchParams.get('mode') === 'marked' ? 'marked' : 'all'
   const states = useSrsStore(s => s.states)
   const review = useSrsStore(s => s.review)
   const toggleMark = useSrsStore(s => s.toggleMark)
   const srsLoaded = useSrsStore(s => s.loaded)
+  const settings = useSettingsStore(s => s.settings)
+  const updateSettings = useSettingsStore(s => s.update)
+  const settingsLoaded = useSettingsStore(s => s.loaded)
+  const batchSize = clampReviewBatchSize(settings.reviewBatchSize)
+  const [batchSizeDraft, setBatchSizeDraft] = useState(String(batchSize))
 
   // 复习池：打标记的重点词（随机序）在前，其余已学词（随机序）在后。
   const [pool, setPool] = useState<Word[]>([])
@@ -33,8 +43,12 @@ export default function ReviewSession() {
   const [doneCount, setDoneCount] = useState(0)
   const [sessionCorrect, setSessionCorrect] = useState(0)
   const [finished, setFinished] = useState(false)
+  const [retryCounts, setRetryCounts] = useState<Record<string, number>>({})
+  const cardShownAtRef = useRef(Date.now())
+  const leftControlPressedRef = useRef(false)
+  const leftControlComboRef = useRef(false)
 
-  // 手机遥控：本机静音，点认识/模糊/不认识等指令发给电脑（与「开始学习」一致）
+  // 手机遥控：本机静音，点认识/不认识等指令发给电脑（与「开始学习」一致）
   const [remoteOn, setRemoteOn] = useState(false)
   const [remoteState, setRemoteState] = useState<RemoteState | null>(null)
   const controlReady = useControlAvailable()
@@ -46,17 +60,19 @@ export default function ReviewSession() {
   )
   const markedTotal = useMemo(() => Object.values(states).filter(s => s.marked).length, [states])
 
-  /** 构建整个复习池（打标记在前） */
+  /** 构建整个复习池：到期、逾期、重点、反复错的词优先 */
   const buildPool = (): Word[] => {
-    const learned = ALL_WORDS.filter(w => (states[w.id]?.level ?? 0) >= 1)
-    const marked = learned.filter(w => states[w.id]?.marked)
-    const unmarked = learned.filter(w => !states[w.id]?.marked)
-    return [...shuffle(marked), ...shuffle(unmarked)]
+    const learned = ALL_WORDS.filter(w => {
+      const st = states[w.id]
+      return reviewMode === 'marked' ? !!st?.marked : (st?.level ?? 0) >= 1
+    })
+    const shuffled = shuffle(learned)
+    return shuffled.sort((a, b) => reviewPriority(states[b.id]) - reviewPriority(states[a.id]))
   }
 
   /** 从池中取出从 start 开始的一批，作为当前队列 */
-  const startFrom = (p: Word[], start: number) => {
-    setQueue(p.slice(start, start + BATCH_SIZE))
+  const startFrom = (p: Word[], start: number, size = batchSize) => {
+    setQueue(p.slice(start, start + size))
     setIdx(0)
     setFlipped(false)
     setDictation('')
@@ -64,21 +80,27 @@ export default function ReviewSession() {
     setDoneCount(0)
     setSessionCorrect(0)
     setFinished(false)
+    setRetryCounts({})
+    cardShownAtRef.current = Date.now()
   }
 
-  // 进入页面：构建整个池并开始第一批（只做一次，复习中不重排）
+  // 进入页面或切换复习模式：构建整个池并开始第一批（复习中不重排）
   useEffect(() => {
-    if (srsLoaded) {
+    if (srsLoaded && settingsLoaded) {
       const p = buildPool()
       setPool(p)
       setBatchStart(0)
       startFrom(p, 0)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [srsLoaded])
+  }, [srsLoaded, settingsLoaded, reviewMode])
+
+  useEffect(() => {
+    setBatchSizeDraft(String(batchSize))
+  }, [batchSize])
 
   const continueReview = () => {
-    const start = batchStart + BATCH_SIZE
+    const start = batchStart + batchSize
     setBatchStart(start)
     startFrom(pool, start)
   }
@@ -90,10 +112,29 @@ export default function ReviewSession() {
     startFrom(p, 0)
   }
 
+  const applyBatchSize = async () => {
+    const nextSize = clampReviewBatchSize(Number(batchSizeDraft))
+    setBatchSizeDraft(String(nextSize))
+    await updateSettings({ reviewBatchSize: nextSize })
+    const p = pool.length ? pool : buildPool()
+    setPool(p)
+    const nextStart = Math.min(batchStart, Math.max(0, p.length - 1))
+    setBatchStart(nextStart)
+    startFrom(p, nextStart, nextSize)
+  }
+
+  const switchReviewMode = (nextMode: ReviewMode) => {
+    setSearchParams(nextMode === 'marked' ? { mode: 'marked' } : {})
+  }
+
   const current = queue[idx]
-  const hasMore = batchStart + BATCH_SIZE < pool.length
+  const hasMore = batchStart + batchSize < pool.length
   const progressText = queue.length === 0 ? '' : `第 ${idx + 1} / ${queue.length} 个`
   const markedInQueue = queue.filter(w => states[w.id]?.marked).length
+
+  useEffect(() => {
+    if (started) cardShownAtRef.current = Date.now()
+  }, [current?.id, started])
 
   // 每张新卡片自动朗读一遍（遮罩单词、手机遥控本机静音时不自动读）
   useEffect(() => {
@@ -109,14 +150,105 @@ export default function ReviewSession() {
     setDictation('')
   }
 
-  // 认识/模糊/不认识（模糊也记对，但间隔更短由 SRS 等级控制）
-  const grade = async (correct: boolean) => {
+  const beginReview = () => {
+    setStarted(true)
+    cardShownAtRef.current = Date.now()
+  }
+
+  const responseMs = () => Math.max(0, Date.now() - cardShownAtRef.current)
+
+  const commandGrade = (msg: Extract<ControlPayload, { type: 'cmd' }>): { grade: ReviewGrade; responseMs?: number } => {
+    if (msg.grade) return { grade: msg.grade, responseMs: msg.responseMs }
+    if (msg.correct === false) return { grade: 'again', responseMs: msg.responseMs }
+    const ms = msg.responseMs ?? responseMs()
+    return { grade: inferRecognitionGrade(ms), responseMs: ms }
+  }
+
+  const queueRetry = (word: Word, grade: ReviewGrade) => {
+    if (grade !== 'again' && grade !== 'hard') return
+    const tried = retryCounts[word.id] ?? 0
+    const limit = grade === 'again' ? 2 : 1
+    if (tried >= limit) return
+    setRetryCounts(prev => ({ ...prev, [word.id]: (prev[word.id] ?? 0) + 1 }))
+    setQueue(prev => {
+      const copy = [...prev]
+      const delay = grade === 'again' ? 8 : 20
+      const insertAt = Math.min(copy.length, idx + delay + 1)
+      copy.splice(insertAt, 0, word)
+      return copy
+    })
+  }
+
+  // 界面只保留「认识/不认识」；认识的熟练度由反应时间自动推断。
+  const grade = async (nextGrade: ReviewGrade, ms?: number) => {
     if (!current) return
-    await review(current.id, correct)
-    if (correct) setSessionCorrect(c => c + 1)
+    await review(current.id, nextGrade, ms)
+    if (isRememberedGrade(nextGrade)) setSessionCorrect(c => c + 1)
+    queueRetry(current, nextGrade)
     setDoneCount(c => c + 1)
     next()
   }
+
+  const gradeKnown = () => {
+    const ms = responseMs()
+    void grade(inferRecognitionGrade(ms), ms)
+  }
+
+  const gradeUnknown = () => {
+    void grade('again', responseMs())
+  }
+
+  useEffect(() => {
+    if (!started || remoteOn || finished || !current) return
+
+    const resetLeftControl = () => {
+      leftControlPressedRef.current = false
+      leftControlComboRef.current = false
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === 'KeyL' && event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault()
+        leftControlComboRef.current = true
+        if (!event.repeat) void speak(current.spelling)
+        return
+      }
+
+      if (event.code === 'ControlLeft') {
+        if (!event.repeat) {
+          leftControlPressedRef.current = true
+          leftControlComboRef.current = false
+        }
+        return
+      }
+
+      if (leftControlPressedRef.current) {
+        leftControlComboRef.current = true
+      }
+    }
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== 'ControlLeft') return
+
+      const shouldGradeUnknown = leftControlPressedRef.current && !leftControlComboRef.current
+      resetLeftControl()
+
+      if (shouldGradeUnknown) {
+        event.preventDefault()
+        gradeUnknown()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', resetLeftControl)
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', resetLeftControl)
+    }
+  }, [current, finished, remoteOn, started])
 
   // ---- 手机遥控：完整会话状态镜像（与 WordStudy 同机制） ----
   const broadcastState = () => {
@@ -144,7 +276,7 @@ export default function ReviewSession() {
   }
 
   // 用 ref 持有最新 handler，避免遥控指令回调拿到过期闭包
-  const ctlRef = useRef<{ continueReview: () => void; restartAll: () => void; broadcastState: () => void; grade: (c: boolean) => void } | undefined>(undefined)
+  const ctlRef = useRef<{ continueReview: () => void; restartAll: () => void; broadcastState: () => void; grade: (g: ReviewGrade, ms?: number) => void } | undefined>(undefined)
   ctlRef.current = { continueReview, restartAll, broadcastState, grade }
 
   useEffect(() => {
@@ -162,7 +294,10 @@ export default function ReviewSession() {
       if (msg.type !== 'cmd') return
       switch (msg.action) {
         case 'grade':
-          if (current && msg.wordId === current.id) void ctlRef.current!.grade(msg.correct ?? true)
+          if (current && msg.wordId === current.id) {
+            const inferred = commandGrade(msg)
+            void ctlRef.current!.grade(inferred.grade, inferred.responseMs)
+          }
           break
         case 'flip':
           setFlipped(f => !f)
@@ -206,7 +341,7 @@ export default function ReviewSession() {
     }
   }, [controlReady, remoteOn])
 
-  if (!srsLoaded) {
+  if (!srsLoaded || !settingsLoaded) {
     return (
       <div className="space-y-4">
         <h1 className="text-2xl font-bold">🔁 单词复习</h1>
@@ -332,12 +467,21 @@ export default function ReviewSession() {
             }`}
           >{rs.marked ? '⭐ 已重点记忆' : '☆ 标记重点记忆'}</button>
           <button onClick={() => send({ type: 'cmd', action: 'speak' })} className="flex-1 border border-slate-300 py-2.5 rounded-lg text-sm text-slate-600">🔊 电脑朗读</button>
+          {(!rs.maskWord || rs.flipped) && (
+            <a
+              href={baiduTranslateUrl(rw.spelling)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 rounded-lg border border-blue-200 py-2.5 text-center text-sm font-medium text-blue-600 hover:bg-blue-50"
+            >
+              百度详情 ↗
+            </a>
+          )}
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
-          <button onClick={() => send({ type: 'cmd', action: 'grade', wordId: rw.id, correct: false })} className="bg-red-500 hover:bg-red-600 text-white py-3 rounded-xl font-medium">不认识</button>
-          <button onClick={() => send({ type: 'cmd', action: 'grade', wordId: rw.id, correct: true })} className="bg-amber-500 hover:bg-amber-600 text-white py-3 rounded-xl font-medium">模糊</button>
-          <button onClick={() => send({ type: 'cmd', action: 'grade', wordId: rw.id, correct: true })} className="bg-green-600 hover:bg-green-700 text-white py-3 rounded-xl font-medium">认识</button>
+        <div className="grid grid-cols-2 gap-3">
+          <button onClick={() => send({ type: 'cmd', action: 'grade', wordId: rw.id, grade: 'again' })} className="bg-red-500 hover:bg-red-600 text-white py-3 rounded-xl font-medium">不认识</button>
+          <button onClick={() => send({ type: 'cmd', action: 'grade', wordId: rw.id })} className="bg-green-600 hover:bg-green-700 text-white py-3 rounded-xl font-medium">认识</button>
         </div>
       </div>
     )
@@ -348,9 +492,17 @@ export default function ReviewSession() {
       <div className="space-y-4">
         <h1 className="text-2xl font-bold">🔁 单词复习</h1>
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center space-y-4">
-          <p className="text-slate-500">还没有已学的单词，先去「开始学习」学一些吧</p>
+          <p className="text-slate-500">
+            {reviewMode === 'marked'
+              ? '还没有收藏过的重点单词，先去单词列表点星标，或者复习时连续 3 次“不认识”会自动加入重点。'
+              : '还没有已学的单词，先去「开始学习」学一些吧'}
+          </p>
           <div className="flex justify-center gap-3">
-            <Link to="/study" className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">去学习</Link>
+            {reviewMode === 'marked' ? (
+              <button onClick={() => switchReviewMode('all')} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">全部复习</button>
+            ) : (
+              <Link to="/study" className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">去学习</Link>
+            )}
             <button onClick={() => navigate('/words')} className="border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-600">回单词列表</button>
           </div>
         </div>
@@ -361,18 +513,21 @@ export default function ReviewSession() {
   if (finished) {
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-bold">本轮复习完成 🎉</h1>
+        <h1 className="text-2xl font-bold">{reviewMode === 'marked' ? '重点复习完成 🎉' : '本轮复习完成 🎉'}</h1>
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center space-y-4">
           <div className="text-5xl">{doneCount > 0 && sessionCorrect / doneCount >= 0.8 ? '🌟' : '💪'}</div>
-          <p className="text-slate-600">本轮复习 {doneCount} 个单词，答对 {sessionCorrect} 个</p>
+          <p className="text-slate-600">{reviewMode === 'marked' ? '重点复习' : '本轮复习'} {doneCount} 个单词，答对 {sessionCorrect} 个</p>
           <p className="text-sm text-slate-500">
             今日已复习 {reviewedToday} 个词{markedTotal > 0 && <> · 仍有 ⭐ {markedTotal} 个重点记忆</>}
           </p>
           <div className="flex flex-col sm:flex-row justify-center gap-2">
             {hasMore && (
-              <button onClick={continueReview} className="bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium">继续复习下一批（剩 {pool.length - batchStart - BATCH_SIZE} 个）</button>
+              <button onClick={continueReview} className="bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium">继续复习下一批（剩 {Math.max(0, pool.length - batchStart - batchSize)} 个）</button>
             )}
             <button onClick={restartAll} className="border border-blue-300 text-blue-600 px-4 py-2.5 rounded-lg text-sm">重新复习一轮</button>
+            <button onClick={() => switchReviewMode(reviewMode === 'marked' ? 'all' : 'marked')} className="border border-amber-300 text-amber-600 px-4 py-2.5 rounded-lg text-sm">
+              {reviewMode === 'marked' ? '切到全部复习' : '切到重点复习'}
+            </button>
             <button onClick={() => navigate('/words')} className="border border-slate-300 px-4 py-2.5 rounded-lg text-sm text-slate-600">回单词列表</button>
           </div>
         </div>
@@ -390,7 +545,7 @@ export default function ReviewSession() {
     <div className={`flex items-center justify-between gap-3 border rounded-lg px-3 py-2 text-sm ${remoteOn ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-slate-200'}`}>
       <span className="text-slate-600">
         {remoteOn
-          ? '📱 遥控模式：本机静音，点「认识/模糊/不认识」会同步操作电脑（电脑端请保持此页打开）'
+          ? '📱 遥控模式：本机静音，点「认识/不认识」会同步操作电脑（电脑端请保持此页打开）'
           : '📡 已连接局域网，可开启手机遥控'}
       </span>
       <button
@@ -403,13 +558,56 @@ export default function ReviewSession() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <h1 className="text-2xl font-bold">🔁 单词复习</h1>
+        <h1 className="text-2xl font-bold">{reviewMode === 'marked' ? '⭐ 重点复习' : '🔁 单词复习'}</h1>
         <button onClick={() => navigate('/words')} className="shrink-0 text-sm text-slate-500 hover:text-slate-700">退出</button>
       </div>
 
       <div className="text-sm text-slate-500">
         今日已复习 <span className="font-semibold text-slate-700">{reviewedToday}</span> 个词
         {markedTotal > 0 && <span className="ml-2 text-amber-600">· ⭐ 重点 {markedTotal} 个</span>}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 rounded-lg bg-white p-1 shadow-sm ring-1 ring-slate-200">
+        <button
+          onClick={() => switchReviewMode('all')}
+          className={`rounded-md px-3 py-2 text-sm font-medium transition ${
+            reviewMode === 'all' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          全部复习
+        </button>
+        <button
+          onClick={() => switchReviewMode('marked')}
+          className={`rounded-md px-3 py-2 text-sm font-medium transition ${
+            reviewMode === 'marked' ? 'bg-amber-500 text-white' : 'text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          重点复习 {markedTotal}
+        </button>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm text-slate-600">
+            本组 <span className="font-semibold text-slate-800">{queue.length}</span> 个
+            <span className="ml-2 text-xs text-slate-400">默认 100，可临时换组数</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={10}
+              max={300}
+              value={batchSizeDraft}
+              onChange={e => setBatchSizeDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') void applyBatchSize()
+              }}
+              className="h-9 w-24 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-blue-500"
+              aria-label="复习每组数量"
+            />
+            <button onClick={applyBatchSize} className="h-9 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700">应用</button>
+          </div>
+        </div>
       </div>
 
       {remoteBar}
@@ -448,7 +646,7 @@ export default function ReviewSession() {
           >{maskWord ? '👁 单词' : '🔒 单词'}</button>
           {!started && (
             <button
-              onClick={() => setStarted(true)}
+              onClick={beginReview}
               className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium"
             >
               放开卡片遮罩
@@ -460,7 +658,7 @@ export default function ReviewSession() {
       {!started ? (
         <button
           aria-label="放开卡片遮罩"
-          onClick={() => setStarted(true)}
+          onClick={beginReview}
           className="block w-full min-h-72 bg-white rounded-2xl shadow-md border border-slate-200 cursor-pointer"
         />
       ) : (
@@ -482,7 +680,7 @@ export default function ReviewSession() {
                     onKeyDown={e => {
                       if (e.key === ' ' && !e.repeat && dictationCorrect) {
                         e.preventDefault()
-                        void grade(true)
+                        void grade('easy', responseMs())
                       }
                     }}
                     className={`w-full rounded-lg border px-4 py-3 text-center text-lg font-semibold outline-none ${
@@ -543,12 +741,21 @@ export default function ReviewSession() {
           }`}
         >{marked ? '⭐ 已重点记忆' : '☆ 标记重点记忆'}</button>
         <button onClick={() => speak(current.spelling)} className="flex-1 border border-slate-300 py-2.5 rounded-lg text-sm text-slate-600">🔊 朗读</button>
+        {(!maskWord || flipped) && (
+          <a
+            href={baiduTranslateUrl(current.spelling)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 rounded-lg border border-blue-200 py-2.5 text-center text-sm font-medium text-blue-600 hover:bg-blue-50"
+          >
+            百度详情 ↗
+          </a>
+        )}
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        <button onClick={() => grade(false)} className="bg-red-500 hover:bg-red-600 active:bg-red-700 text-white py-3 rounded-xl font-medium">不认识</button>
-        <button onClick={() => grade(true)} className="bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white py-3 rounded-xl font-medium">模糊</button>
-        <button onClick={() => grade(true)} className="bg-green-600 hover:bg-green-700 active:bg-green-800 text-white py-3 rounded-xl font-medium">认识</button>
+      <div className="grid grid-cols-2 gap-3">
+        <button onClick={gradeUnknown} className="bg-red-500 hover:bg-red-600 active:bg-red-700 text-white py-3 rounded-xl font-medium">不认识</button>
+        <button onClick={gradeKnown} className="bg-green-600 hover:bg-green-700 active:bg-green-800 text-white py-3 rounded-xl font-medium">认识</button>
       </div>
         </>
       )}
@@ -558,6 +765,25 @@ export default function ReviewSession() {
 
 function normalizeDictation(s: string): string {
   return s.trim().toLowerCase()
+}
+
+function clampReviewBatchSize(value: number): number {
+  return Math.max(10, Math.min(300, Math.round(value || DEFAULT_REVIEW_BATCH_SIZE)))
+}
+
+function reviewPriority(st: SrsState | undefined): number {
+  if (!st) return 0
+  const now = Date.now()
+  const overdueHours = st.due <= now ? (now - st.due) / 3600000 : 0
+  return (
+    (st.due <= now ? 10000 : 0) +
+    Math.min(2400, overdueHours) +
+    (st.marked ? 1200 : 0) +
+    (st.lapseCount ?? 0) * 500 +
+    st.wrongCount * 120 +
+    (st.lastGrade === 'hard' ? 200 : 0) -
+    st.level * 20
+  )
 }
 
 function shuffle<T>(arr: T[]): T[] {

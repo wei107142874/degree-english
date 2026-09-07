@@ -7,6 +7,7 @@ import WordStudy from './pages/WordStudy'
 import ReviewSession from './pages/ReviewSession'
 import Grammar from './pages/Grammar'
 import GrammarLesson from './pages/GrammarLesson'
+import GrammarMicroLesson from './pages/GrammarMicroLesson'
 import Practice from './pages/Practice'
 import PracticeSession from './pages/PracticeSession'
 import MockExam from './pages/MockExam'
@@ -44,6 +45,7 @@ export default function App() {
         <Route path="/study" element={<WordStudy />} />
         <Route path="/review" element={<ReviewSession />} />
         <Route path="/grammar" element={<Grammar />} />
+        <Route path="/grammar/micro/:id" element={<GrammarMicroLesson />} />
         <Route path="/grammar/:id" element={<GrammarLesson />} />
         <Route path="/practice" element={<Practice />} />
         <Route path="/practice/:section" element={<PracticeSession />} />

@@ -12,6 +12,9 @@ export interface Word {
 }
 
 // ---------- SRS 记忆状态 ----------
+export type ReviewGrade = 'again' | 'hard' | 'good' | 'easy';
+export type StudyMode = 'flashcard' | 'quiz' | 'meaning' | 'cloze';
+
 export interface SrsState {
   wordId: string;
   level: number;         // 0 未学 / 1..5 记忆等级
@@ -19,6 +22,13 @@ export interface SrsState {
   due: number;           // 下次复习时间戳（ms）
   wrongCount: number;    // 累计错误次数
   reviewCount: number;   // 复习次数
+  consecutiveCorrect?: number; // 连续认识次数
+  consecutiveUnknown?: number; // 连续选择“不认识”的次数，达到阈值后自动重点记忆
+  consecutiveFastKnown?: number; // 连续 5 秒内选择“认识”的次数，达到阈值后自动取消重点
+  lapseCount?: number;    // 已学后再次忘记的次数
+  lastGrade?: ReviewGrade; // 最近一次评分：不认识/犹豫认识/认识/秒懂
+  lastResponseMs?: number; // 最近一次反应时间
+  averageResponseMs?: number; // 平均反应时间
   lastReview: number;    // 上次复习时间戳
   learnedAt?: number;    // 首次学到的日期戳（区分“今天新学”与“今天复习”）
   marked?: boolean;      // 标记为重点记忆（没怎么记住，需重点复习）
@@ -44,6 +54,44 @@ export interface GrammarLesson {
     examples?: { en: string; zh: string }[];
   }[];
   quiz: GrammarQuiz[];
+}
+
+export interface GrammarNewWord {
+  word: string;
+  zh: string;
+}
+
+export interface GrammarMicroExample {
+  en: string;
+  zh: string;
+  requiredWords?: string[];
+  newWords?: GrammarNewWord[];
+}
+
+export interface GrammarMicroExercise {
+  id: string;
+  type: 'choice';
+  prompt: string;
+  options: string[];
+  answer: number;
+  requiredWords?: string[];
+  newWords?: GrammarNewWord[];
+  correctFeedback: string;
+  wrongFeedback: string;
+}
+
+export interface GrammarMicroLesson {
+  id: string;
+  title: string;
+  category: string;
+  summary: string;
+  point: string;
+  minutes: number;
+  analogy: string;
+  rule: string;
+  examples: GrammarMicroExample[];
+  exercises: GrammarMicroExercise[];
+  memoryHook: string;
 }
 
 // ---------- 题目 ----------
@@ -128,6 +176,7 @@ export interface StudyPlan {
 export interface Settings {
   id: string;              // 固定 'main'
   dailyNewWords: number;   // 每日新词目标
+  reviewBatchSize: number; // 单词复习每组数量
   examDate: string | null; // 考试日期 YYYY-MM-DD
   mockSectionConfig: ExamSectionConfig[]; // 模拟卷题型配置
   speakEngine: 'auto' | 'local' | 'online'; // 朗读引擎：自动/本地/在线

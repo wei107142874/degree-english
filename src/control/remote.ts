@@ -8,7 +8,7 @@
 //   - 电脑端（显示端，默认）：本机正常学习；收到手机指令后执行
 //     并广播完整会话状态（当前词/翻面/模式/遮罩/自测选项/进度）。
 //   - 手机端（遥控端，开启遥控后）：只显示电脑广播的状态、只发
-//     指令，本机静音、不写本地数据。所有操作（认识/模糊/不认识、
+//     指令，本机静音、不写本地数据。所有操作（认识/不认识、
 //     翻面、切模式、遮罩、自测答题、朗读）都实时同步到电脑。
 //
 // 仅当页面由局域网服务器提供（location.origin 可连 /api/control/*）时可用。
@@ -16,10 +16,11 @@
 
 import { useEffect, useState } from 'react'
 import { getDeviceId, getSyncStatus, onSyncStatus } from '../sync/client'
+import type { ReviewGrade, StudyMode } from '../types'
 
 /** 电脑端广播的完整会话状态（手机端照此渲染） */
 export interface RemoteState {
-  mode: 'flashcard' | 'quiz'
+  mode: StudyMode
   wordId: string
   flipped: boolean
   maskWord: boolean
@@ -42,8 +43,10 @@ export type ControlPayload =
       type: 'cmd'
       action: 'grade' | 'flip' | 'mode' | 'mask' | 'quiz' | 'speak' | 'hello' | 'mark' | 'continue' | 'restart'
       wordId?: string
+      grade?: ReviewGrade
+      responseMs?: number
       correct?: boolean
-      mode?: 'flashcard' | 'quiz'
+      mode?: StudyMode
       on?: boolean
       choice?: number
     }

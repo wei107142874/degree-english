@@ -1,15 +1,15 @@
 import { create } from 'zustand';
-import type { SrsState } from '../types';
+import type { ReviewGrade, SrsState } from '../types';
 import { getDb, putRecord } from '../db/db';
-import { getDueWords, getNewWords, todayStamp } from '../lib/srs';
+import { getDueWords, getNewWords, srsNextState, todayStamp } from '../lib/srs';
 
 interface SrsStore {
   states: Record<string, SrsState>;
   loaded: boolean;
   load: () => Promise<void>;
   getState: (wordId: string) => SrsState | undefined;
-  /** 复习反馈：correct=true 升级，否则降级 */
-  review: (wordId: string, correct: boolean) => Promise<void>;
+  /** 复习反馈：again=不认识；hard/good/easy 由认识反应时间推断 */
+  review: (wordId: string, grade: ReviewGrade, responseMs?: number) => Promise<void>;
   /** 标记单词已学（记一次"认识"） */
   markLearned: (wordId: string) => Promise<void>;
   /** 切换「重点记忆」标记（没记住、需重点复习的单词） */
@@ -37,23 +37,9 @@ export const useSrsStore = create<SrsStore>((set, get) => ({
 
   getState: (wordId) => get().states[wordId],
 
-  review: async (wordId, correct) => {
+  review: async (wordId, grade, responseMs) => {
     const prev = get().states[wordId] ?? EMPTY_STATE(wordId);
-    const next: SrsState = {
-      ...prev,
-      level: correct ? Math.min(5, prev.level + 1) : Math.max(0, prev.level - 2),
-      interval: correct
-        ? srsInterval(prev.level + 1)
-        : 0,
-      due: correct
-        ? Date.now() + srsInterval(prev.level + 1) * 86400000
-        : Date.now() + 10 * 60000, // 模糊/错误 10 分钟后再见
-      wrongCount: correct ? prev.wrongCount : prev.wrongCount + 1,
-      reviewCount: prev.reviewCount + 1,
-      lastReview: Date.now(),
-      // 首次学会（0 → 1）时记录学习日期，用于区分“今天新学”与“今天复习”
-      learnedAt: correct && prev.level === 0 ? (prev.learnedAt ?? Date.now()) : prev.learnedAt,
-    };
+    const next = srsNextState(prev, grade, Date.now(), responseMs);
     await putRecord('srs', next);
     set({ states: { ...get().states, [wordId]: next } });
   },
@@ -88,10 +74,5 @@ export const useSrsStore = create<SrsStore>((set, get) => ({
     set({ states: {} });
   },
 }));
-
-// 复习间隔（天）：1, 2, 4, 7, 15, 30
-function srsInterval(level: number): number {
-  return [1, 2, 4, 7, 15, 30][Math.min(5, Math.max(1, level)) - 1] ?? 1;
-}
 
 export { todayStamp };

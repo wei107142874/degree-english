@@ -7,6 +7,7 @@ import { WORD_ORDER_SEED } from '../lib/wordOrder';
 const DEFAULT_SETTINGS: Settings = {
   id: 'main',
   dailyNewWords: 30,
+  reviewBatchSize: 100,
   examDate: null,
   mockSectionConfig: DEFAULT_SECTION_CONFIG,
   speakEngine: 'auto',

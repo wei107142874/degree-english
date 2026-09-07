@@ -5,8 +5,9 @@ import type { Word } from '../types'
 import { useSrsStore } from '../store/useSrsStore'
 import { useSettingsStore } from '../store/useSettingsStore'
 import { WORD_ORDER_SEED, buildOrderIndex, seededShuffle } from '../lib/wordOrder'
-import { badgeLevel, todayStamp, countReviewedToday } from '../lib/srs'
+import { badgeLevel, todayStamp, countReviewedToday, summarizeWordLearning } from '../lib/srs'
 import { ProgressBar, speak } from '../components/common'
+import { baiduTranslateUrl } from '../lib/dictionary'
 
 type LearnedFilter = 'all' | 'new' | 'learned'
 
@@ -56,8 +57,9 @@ export default function Words() {
   const visibleResults = useMemo(() => results.slice(0, visibleCount), [results, visibleCount])
   const hasMore = visibleCount < results.length
 
-  const learned = Object.values(states).filter(s => s.level >= 1).length
-  const markedCount = Object.values(states).filter(s => s.marked).length
+  const wordStats = useMemo(() => summarizeWordLearning(Object.values(states)), [states])
+  const learned = wordStats.learned
+  const markedCount = wordStats.marked
   const reviewedToday = countReviewedToday(Object.values(states), todayStamp())
   const progressValue = learned / ALL_WORDS.length
   const activeFilterCount =
@@ -120,7 +122,7 @@ export default function Words() {
       <li
         key={w.id}
         onClick={() => { if (anyMask) toggleReveal(w.id) }}
-        className={`group grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 transition-all duration-150 hover:bg-slate-50 active:bg-blue-50/60 sm:px-4 sm:py-3.5 ${
+        className={`group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 transition-all duration-150 hover:bg-slate-50 active:bg-blue-50/60 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:px-4 sm:py-3.5 ${
           anyMask ? 'cursor-pointer' : ''
         }`}
       >
@@ -129,26 +131,29 @@ export default function Words() {
         </div>
 
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
             {showWord ? (
               <>
-                <span className="text-base font-bold leading-tight text-slate-900 sm:text-lg">{w.spelling}</span>
-                {w.phonetic && <span className="text-xs text-slate-400">{w.phonetic}</span>}
+                <span className="min-w-0 max-w-full break-all text-base font-bold leading-tight text-slate-900 sm:text-lg">{w.spelling}</span>
+                {w.phonetic && <span className="min-w-0 max-w-full break-all text-xs text-slate-400">{w.phonetic}</span>}
               </>
             ) : (
               <span className="text-sm font-medium text-slate-300 select-none">点击显示单词</span>
             )}
-            {w.pos && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600">{w.pos}</span>}
-            <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+            {w.pos && <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600">{w.pos}</span>}
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${
               w.tier === 1 ? 'bg-red-50 text-red-600' : w.tier === 2 ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-500'
             }`}>{TIER_LABELS[w.tier]}</span>
             {st && st.level >= 1 && (
               <span
-                className="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600"
+                className="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600"
                 title={`正确认识 ${correctCount} 次`}
               >已学{level >= 1 ? ` Lv${level}` : ''}</span>
             )}
-            {st?.marked && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-600">重点</span>}
+            {st?.marked && <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-600">重点</span>}
+            {st?.lastGrade === 'hard' && <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600">慢想起</span>}
+            {st && (st.wrongCount >= 2 || (st.lapseCount ?? 0) >= 1) && <span className="shrink-0 rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-600">易忘</span>}
+            {st?.averageResponseMs && <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500">{(st.averageResponseMs / 1000).toFixed(1)}s</span>}
           </div>
           {showMean ? (
             <div className="mt-1 line-clamp-2 text-sm leading-5 text-slate-500">{w.meanings.join('；')}</div>
@@ -174,6 +179,16 @@ export default function Words() {
             title="朗读"
             aria-label="朗读"
           >🔊</button>
+          <a
+            href={baiduTranslateUrl(w.spelling)}
+            target="_blank"
+            rel="noopener noreferrer"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            className="flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold text-slate-400 transition-all hover:bg-blue-50 hover:text-blue-600 active:scale-90"
+            title={`查看 ${w.spelling} 的百度翻译详情`}
+            aria-label={`查看 ${w.spelling} 的百度翻译详情`}
+          >↗</a>
         </div>
       </li>
     )
@@ -206,13 +221,24 @@ export default function Words() {
             <StatPill label="今日复习" value={reviewedToday} tone="emerald" />
             <StatPill label="筛选" value={activeFilterCount} tone="blue" />
           </div>
+          <div className="mt-2 hidden grid-cols-3 gap-2 text-center sm:grid">
+            <StatPill label="熟词" value={wordStats.mature} tone="emerald" />
+            <StatPill label="慢反应" value={wordStats.slowRecall} tone="blue" />
+            <StatPill label="易忘" value={wordStats.repeatedWrong} tone="red" />
+          </div>
+          <div className="mt-2 hidden rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 sm:block">
+            平均反应：{wordStats.averageResponseMs ? `${(wordStats.averageResponseMs / 1000).toFixed(1)} 秒` : '暂无数据'}
+          </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2">
+          <div className="mt-4 grid grid-cols-3 gap-2">
             <Link to="/study" className="rounded-lg bg-blue-600 px-3 py-2.5 text-center text-sm font-semibold text-white transition-all hover:bg-blue-700 active:scale-[0.98] sm:py-3">
               开始学习
             </Link>
             <Link to="/review" className="rounded-lg bg-amber-500 px-3 py-2.5 text-center text-sm font-semibold text-white transition-all hover:bg-amber-600 active:scale-[0.98] sm:py-3">
               复习
+            </Link>
+            <Link to="/review?mode=marked" className="rounded-lg bg-amber-100 px-3 py-2.5 text-center text-sm font-semibold text-amber-700 transition-all hover:bg-amber-200 active:scale-[0.98] sm:py-3">
+              重点复习
             </Link>
           </div>
         </div>
@@ -320,11 +346,12 @@ export default function Words() {
   )
 }
 
-function StatPill({ label, value, tone }: { label: string; value: number; tone: 'amber' | 'blue' | 'emerald' }) {
+function StatPill({ label, value, tone }: { label: string; value: React.ReactNode; tone: 'amber' | 'blue' | 'emerald' | 'red' }) {
   const toneClass = {
     amber: 'bg-amber-50 text-amber-700',
     blue: 'bg-blue-50 text-blue-700',
     emerald: 'bg-emerald-50 text-emerald-700',
+    red: 'bg-red-50 text-red-700',
   }[tone]
 
   return (

@@ -1115,7 +1115,7 @@ export const tier1Raw: WordTuple[] = [
 ["regard", "rɪˈɡɑːrd", "v./n.", "把……看作；尊重；问候", "I regard him as my best friend.||我把他看作我最好的朋友。"],
 ["region", "ˈriːdʒən", "n.", "地区；区域", "This region is famous for tea.||这个地区以产茶闻名。"],
 ["regret", "rɪˈɡret", "v./n.", "后悔；遗憾", "I regret wasting so much time.||我后悔浪费了那么多时间。"],
-["regular", "ˈreɡjələr", "adj.", "定期的；规律的；普通的", "Exercise regularly to stay healthy.||定期锻炼以保持健康。"],
+["regular", "ˈreɡjələr", "adj.", "定期的；规律的；普通的", "Regular exercise helps you stay healthy.||规律运动有助于保持健康。"],
 ["reject", "rɪˈdʒekt", "v.", "拒绝；驳回", "The company rejected his application.||公司拒绝了他的申请。"],
 ["relate", "rɪˈleɪt", "v.", "联系；叙述；有关", "This problem relates to everyone.||这个问题与每个人都有关系。"],
 ["relation", "rɪˈleɪʃn", "n.", "关系；联系；亲属", "The relation between the two countries is good.||两国关系良好。"],

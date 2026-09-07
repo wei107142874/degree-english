@@ -30,6 +30,7 @@ export default function Settings() {
   const resetPlan = usePlanStore(s => s.resetAll)
   const [examDate, setExamDate] = useState(settings.examDate ?? '')
   const [daily, setDaily] = useState(settings.dailyNewWords)
+  const [reviewBatchSize, setReviewBatchSize] = useState(settings.reviewBatchSize)
   const [msg, setMsg] = useState('')
   const [syncStatus, setSyncStatus] = useState(getSyncStatus())
   const [newUser, setNewUser] = useState('')
@@ -45,7 +46,7 @@ export default function Settings() {
   }, [])
 
   const save = async () => {
-    await update({ examDate: examDate || null, dailyNewWords: daily })
+    await update({ examDate: examDate || null, dailyNewWords: daily, reviewBatchSize: clampReviewBatchSize(reviewBatchSize) })
     setMsg('已保存 ✅')
     setTimeout(() => setMsg(''), 2000)
   }
@@ -76,7 +77,7 @@ export default function Settings() {
   const doResetAll = async () => {
     if (!confirm('确定要清空全部学习数据吗？此操作不可恢复！')) return
     await Promise.all([resetSrs(), resetAttempts(), resetPlan()])
-    await update({ examDate: null, dailyNewWords: 30 })
+    await update({ examDate: null, dailyNewWords: 30, reviewBatchSize: 100 })
     // 同时清空服务器上的数据
     await syncClearAll()
     setMsg('已清空全部数据')
@@ -114,7 +115,7 @@ export default function Settings() {
 
       <Card>
         <h2 className="font-bold text-slate-800 mb-3">考试与学习设置</h2>
-        <div className="grid md:grid-cols-2 gap-4">
+        <div className="grid md:grid-cols-3 gap-4">
           <div>
             <label className="text-xs text-slate-500 block mb-1">考试日期（用于倒计时与计划）</label>
             <input type="date" value={examDate} onChange={e => setExamDate(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
@@ -122,6 +123,10 @@ export default function Settings() {
           <div>
             <label className="text-xs text-slate-500 block mb-1">每日新词目标</label>
             <input type="number" min={10} max={100} value={daily} onChange={e => setDaily(Number(e.target.value))} className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">复习每组数量</label>
+            <input type="number" min={10} max={300} value={reviewBatchSize} onChange={e => setReviewBatchSize(Number(e.target.value))} className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
           </div>
         </div>
         <button onClick={save} className="mt-3 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm">保存设置</button>
@@ -267,4 +272,8 @@ export default function Settings() {
       </Card>
     </div>
   )
+}
+
+function clampReviewBatchSize(value: number): number {
+  return Math.max(10, Math.min(300, Math.round(value || 100)))
 }

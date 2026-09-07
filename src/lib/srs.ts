@@ -1,4 +1,29 @@
-import type { SrsState } from '../types';
+import type { ReviewGrade, SrsState } from '../types';
+
+const DAY_MS = 86400000;
+const AGAIN_DELAY_MS = 10 * 60000;
+const EASY_RESPONSE_MS = 5000;
+const HARD_RESPONSE_MS = 15000;
+const AUTO_MARK_UNKNOWN_STREAK = 3;
+const AUTO_UNMARK_FAST_KNOWN_STREAK = 6;
+
+export interface DailyNewWordsPlan {
+  base: number;
+  recommended: number;
+  pressure: 'light' | 'normal' | 'heavy' | 'overload';
+  reason: string;
+}
+
+export interface WordLearningStats {
+  learned: number;
+  due: number;
+  marked: number;
+  mature: number;
+  repeatedWrong: number;
+  slowRecall: number;
+  fragile: number;
+  averageResponseMs: number | null;
+}
 
 /** 今天的日期字符串 YYYY-MM-DD（本地时区） */
 export function todayStamp(): string {
@@ -18,6 +43,96 @@ export function srsInterval(level: number): number {
   const table = [1, 2, 4, 7, 15, 30];
   const idx = Math.min(table.length - 1, Math.max(0, level - 1));
   return table[idx];
+}
+
+/** 只保留「认识」按钮时，用反应时间推断熟练度。 */
+export function inferRecognitionGrade(responseMs: number): ReviewGrade {
+  if (responseMs <= EASY_RESPONSE_MS) return 'easy';
+  if (responseMs <= HARD_RESPONSE_MS) return 'good';
+  return 'hard';
+}
+
+export function isRememberedGrade(grade: ReviewGrade): boolean {
+  return grade !== 'again';
+}
+
+export function srsNextState(prev: SrsState, grade: ReviewGrade, now: number, responseMs?: number): SrsState {
+  const remembered = isRememberedGrade(grade);
+  const consecutiveUnknown = remembered ? 0 : (prev.consecutiveUnknown ?? 0) + 1;
+  const fastKnown = remembered && responseMs !== undefined && responseMs <= EASY_RESPONSE_MS;
+  const consecutiveFastKnown = fastKnown ? (prev.consecutiveFastKnown ?? 0) + 1 : 0;
+  const marked = consecutiveUnknown >= AUTO_MARK_UNKNOWN_STREAK
+    ? true
+    : consecutiveFastKnown >= AUTO_UNMARK_FAST_KNOWN_STREAK
+      ? false
+      : !!prev.marked;
+  const nextLevel =
+    grade === 'easy'
+      ? Math.min(5, prev.level + 2)
+      : grade === 'good'
+        ? Math.min(5, prev.level + 1)
+        : grade === 'hard'
+          ? Math.max(1, prev.level)
+          : Math.max(0, prev.level - 2);
+  const interval = remembered ? srsInterval(nextLevel) : 0;
+  const reviewCount = prev.reviewCount + 1;
+  const averageResponseMs = responseMs === undefined
+    ? prev.averageResponseMs
+    : Math.round(((prev.averageResponseMs ?? responseMs) * prev.reviewCount + responseMs) / reviewCount);
+
+  return {
+    ...prev,
+    level: nextLevel,
+    interval,
+    due: remembered ? now + interval * DAY_MS : now + AGAIN_DELAY_MS,
+    wrongCount: remembered ? prev.wrongCount : prev.wrongCount + 1,
+    reviewCount,
+    consecutiveCorrect: remembered ? (prev.consecutiveCorrect ?? 0) + 1 : 0,
+    consecutiveUnknown,
+    consecutiveFastKnown,
+    lapseCount: remembered ? (prev.lapseCount ?? 0) : (prev.lapseCount ?? 0) + (prev.level >= 1 ? 1 : 0),
+    marked,
+    lastGrade: grade,
+    lastResponseMs: responseMs,
+    averageResponseMs,
+    lastReview: now,
+    learnedAt: remembered && prev.level === 0 ? (prev.learnedAt ?? now) : prev.learnedAt,
+  };
+}
+
+/** 按复习压力动态调整今日新词数；不修改用户设置，只影响今日实际队列。 */
+export function dailyNewWordsPlan(baseGoal: number, dueCount: number): DailyNewWordsPlan {
+  const base = Math.max(1, Math.min(100, Math.round(baseGoal || 30)));
+  if (dueCount >= 80) {
+    return { base, recommended: 0, pressure: 'overload', reason: '到期词太多，今天优先清复习债' };
+  }
+  if (dueCount >= 30) {
+    return { base, recommended: Math.max(5, Math.ceil(base * 0.5)), pressure: 'heavy', reason: '复习压力偏高，新词自动减半' };
+  }
+  if (dueCount >= 15) {
+    return { base, recommended: Math.max(5, Math.ceil(base * 0.75)), pressure: 'normal', reason: '有一定复习压力，新词略微减少' };
+  }
+  return { base, recommended: base, pressure: 'light', reason: '复习压力较轻，按原计划学习新词' };
+}
+
+export function summarizeWordLearning(states: SrsState[]): WordLearningStats {
+  const now = Date.now();
+  const learned = states.filter(s => s.level >= 1);
+  const responseStates = states.filter(s => Number.isFinite(s.averageResponseMs));
+  const averageResponseMs = responseStates.length
+    ? Math.round(responseStates.reduce((sum, s) => sum + (s.averageResponseMs ?? 0), 0) / responseStates.length)
+    : null;
+
+  return {
+    learned: learned.length,
+    due: learned.filter(s => s.due <= now).length,
+    marked: states.filter(s => s.marked).length,
+    mature: learned.filter(s => s.level >= 3).length,
+    repeatedWrong: learned.filter(s => s.wrongCount >= 2 || (s.lapseCount ?? 0) >= 1).length,
+    slowRecall: learned.filter(s => s.lastGrade === 'hard' || (s.averageResponseMs ?? 0) > HARD_RESPONSE_MS).length,
+    fragile: learned.filter(s => s.level < 3 || s.lastGrade === 'hard' || s.wrongCount > 0).length,
+    averageResponseMs,
+  };
 }
 
 /** 到期待复习的词（level>=1 且 due <= now） */
