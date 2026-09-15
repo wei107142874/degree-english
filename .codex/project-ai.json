@@ -1,0 +1,14 @@
+{
+  "project_name": "English_Learn",
+  "project_type": "react-node-fullstack",
+  "repo_path": "D:\\Projects\\English_Learn",
+  "wiki_dir": "E:\\笔记\\项目笔记\\30-LLM-WIKI\\English_Learn",
+  "source_notes_dir": "E:\\笔记\\项目笔记\\20-Projects\\English_Learn",
+  "workflow": {
+    "preflight_skill": "project-knowledge-preflight",
+    "coding_skill": "safe-coding",
+    "sync_skill": "project-knowledge-sync"
+  },
+  "created_at": "2026-09-07",
+  "status": "draft_bootstrapped"
+}

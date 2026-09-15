@@ -1,0 +1,4 @@
+interface:
+  display_name: "English_Learn Preflight"
+  short_description: "Read project knowledge before coding."
+  default_prompt: "先对当前任务做项目知识库开发前预读。"

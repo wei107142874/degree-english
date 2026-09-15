@@ -1,0 +1,4 @@
+interface:
+  display_name: "English_Learn Knowledge Sync"
+  short_description: "Write verified project changes back to the LLM Wiki."
+  default_prompt: "把本次真实改动沉淀回项目 LLM Wiki。"

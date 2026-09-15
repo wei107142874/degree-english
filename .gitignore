@@ -1,6 +1,7 @@
 node_modules
 dist
 *.local
+.deploy.local.ps1
 .DS_Store
 # 局域网同步服务器数据（本机磁盘文件，不应提交）
 data/

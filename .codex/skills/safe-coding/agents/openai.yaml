@@ -1,4 +1,4 @@
 interface:
-  display_name: "safe-coding"
-  short_description: "Security reviews and secure-by-default guidance"
-  default_prompt: "Review this codebase for security best practices and suggest secure-by-default improvements."
+  display_name: "English_Learn Safe Coding"
+  short_description: "Execute coding work with project rules and risk checks."
+  default_prompt: "按项目安全开发流程分析并实现当前需求。"

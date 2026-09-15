@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ALL_WORDS } from '../data/words'
-import type { ReviewGrade, SrsState, Word } from '../types'
+import type { ReviewGrade, Word } from '../types'
 import { useSrsStore } from '../store/useSrsStore'
 import { useSettingsStore } from '../store/useSettingsStore'
 import { speak } from '../components/common'
 import { countReviewedToday, inferRecognitionGrade, isRememberedGrade, todayStamp } from '../lib/srs'
+import { buildReviewPool } from '../lib/reviewQueue'
 import { onControl, sendControl, useControlAvailable } from '../control/remote'
 import type { ControlPayload, RemoteState } from '../control/remote'
 import { baiduTranslateUrl } from '../lib/dictionary'
@@ -28,7 +29,7 @@ export default function ReviewSession() {
   const batchSize = clampReviewBatchSize(settings.reviewBatchSize)
   const [batchSizeDraft, setBatchSizeDraft] = useState(String(batchSize))
 
-  // 复习池：打标记的重点词（随机序）在前，其余已学词（随机序）在后。
+  // 复习池：全部复习按优先级推进；重点复习每次进入都重新随机打乱。
   const [pool, setPool] = useState<Word[]>([])
   const [batchStart, setBatchStart] = useState(0) // 池中已取出的词数（“继续复习”用）
   const [queue, setQueue] = useState<Word[]>([])
@@ -60,14 +61,9 @@ export default function ReviewSession() {
   )
   const markedTotal = useMemo(() => Object.values(states).filter(s => s.marked).length, [states])
 
-  /** 构建整个复习池：到期、逾期、重点、反复错的词优先 */
+  /** 构建整个复习池：全部复习按优先级，重点复习按随机顺序 */
   const buildPool = (): Word[] => {
-    const learned = ALL_WORDS.filter(w => {
-      const st = states[w.id]
-      return reviewMode === 'marked' ? !!st?.marked : (st?.level ?? 0) >= 1
-    })
-    const shuffled = shuffle(learned)
-    return shuffled.sort((a, b) => reviewPriority(states[b.id]) - reviewPriority(states[a.id]))
+    return buildReviewPool(ALL_WORDS, states, reviewMode)
   }
 
   /** 从池中取出从 start 开始的一批，作为当前队列 */
@@ -769,28 +765,4 @@ function normalizeDictation(s: string): string {
 
 function clampReviewBatchSize(value: number): number {
   return Math.max(10, Math.min(300, Math.round(value || DEFAULT_REVIEW_BATCH_SIZE)))
-}
-
-function reviewPriority(st: SrsState | undefined): number {
-  if (!st) return 0
-  const now = Date.now()
-  const overdueHours = st.due <= now ? (now - st.due) / 3600000 : 0
-  return (
-    (st.due <= now ? 10000 : 0) +
-    Math.min(2400, overdueHours) +
-    (st.marked ? 1200 : 0) +
-    (st.lapseCount ?? 0) * 500 +
-    st.wrongCount * 120 +
-    (st.lastGrade === 'hard' ? 200 : 0) -
-    st.level * 20
-  )
-}
-
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr]
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    const t = a[i]; a[i] = a[j]; a[j] = t
-  }
-  return a
 }
