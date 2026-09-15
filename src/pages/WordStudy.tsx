@@ -206,6 +206,30 @@ export default function WordStudy() {
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === 'KeyS' && event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault()
+        leftControlComboRef.current = true
+        if (!event.repeat) void speak(current.spelling)
+        return
+      }
+
+      if (event.code === 'KeyD' && event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault()
+        leftControlComboRef.current = true
+        setFlipped(true)
+        return
+      }
+
+      if (isTypingTarget(event.target)) return
+
+      if (event.code === 'Space') {
+        if (!event.repeat) {
+          event.preventDefault()
+          gradeKnown()
+        }
+        return
+      }
+
       if (event.code === 'KeyL' && event.ctrlKey && !event.altKey && !event.metaKey) {
         event.preventDefault()
         leftControlComboRef.current = true
@@ -761,4 +785,10 @@ function clozeSentence(word: Word): string {
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return target.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
 }
