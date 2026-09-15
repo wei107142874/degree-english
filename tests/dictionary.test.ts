@@ -9,8 +9,14 @@ describe('dictionary links', () => {
   })
 
   it('encodes words before putting them in the query string', () => {
-    expect(baiduTranslateUrl('look up')).toBe(
+    expect(baiduTranslateUrl('look up', { isMobile: false })).toBe(
       'https://fanyi.baidu.com/mtpe-individual/transText?query=look%20up&lang=en2zh',
+    )
+  })
+
+  it('builds the mobile Baidu Translate URL on mobile devices', () => {
+    expect(baiduTranslateUrl('hello', { isMobile: true })).toBe(
+      'https://fanyi.baidu.com/m/trans?from=en&to=zh&query=hello',
     )
   })
 })
