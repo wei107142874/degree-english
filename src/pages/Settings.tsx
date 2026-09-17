@@ -4,6 +4,7 @@ import { useSrsStore } from '../store/useSrsStore'
 import { useAttemptStore } from '../store/useAttemptStore'
 import { usePlanStore } from '../store/usePlanStore'
 import {
+  claimUser,
   copyUserData,
   createUser,
   exportAll,
@@ -35,13 +36,17 @@ export default function Settings() {
   const [syncStatus, setSyncStatus] = useState(getSyncStatus())
   const [newUser, setNewUser] = useState('')
   const [users, setUsers] = useState<DbUser[]>([])
+  const [claimTarget, setClaimTarget] = useState('')
+  const [claimPassword, setClaimPassword] = useState('')
   const [copyFrom, setCopyFrom] = useState('')
 
   useEffect(() => onSyncStatus(setSyncStatus), [])
   useEffect(() => {
     listUsers().then(rows => {
       setUsers(rows)
-      setCopyFrom(rows.find(u => u.id !== getCurrentUserId())?.id ?? '')
+      const firstOtherUser = rows.find(u => u.id !== getCurrentUserId())?.id ?? ''
+      setClaimTarget(firstOtherUser)
+      setCopyFrom(firstOtherUser)
     }).catch(() => setUsers([]))
   }, [])
 
@@ -100,6 +105,31 @@ export default function Settings() {
     }
   }
 
+  const claimExistingUser = async () => {
+    if (!claimTarget || claimTarget === getCurrentUserId()) {
+      setMsg('请选择要认领的用户')
+      return
+    }
+    if (!claimPassword.trim()) {
+      setMsg('请输入认领密码')
+      return
+    }
+    try {
+      await claimUser(claimTarget, claimPassword)
+      setCurrentUserId(claimTarget)
+      setMsg('用户认领成功，正在切换...')
+      setTimeout(() => location.reload(), 800)
+    } catch (e) {
+      if (e instanceof Error && e.message === 'invalid password') {
+        setMsg('认领失败：密码不是当前北京时间年月日')
+      } else if (e instanceof Error && e.message === 'user not found') {
+        setMsg('认领失败：用户不存在')
+      } else {
+        setMsg('认领用户失败')
+      }
+    }
+  }
+
   const doCopyUser = async () => {
     if (!copyFrom || copyFrom === getCurrentUserId()) return
     if (!confirm(`确定用「${copyFrom}」的数据覆盖当前用户「${getCurrentUserId()}」吗？此操作不可恢复。`)) return
@@ -134,7 +164,7 @@ export default function Settings() {
 
       <Card>
         <h2 className="font-bold text-slate-800 mb-2">用户数据隔离</h2>
-        <p className="text-xs text-slate-500 mb-3">当前用户：<b>{getCurrentUserId()}</b>。先创建新用户名称；不拉取数据就从 0 开始。</p>
+        <p className="text-xs text-slate-500 mb-3">当前用户：<b>{getCurrentUserId()}</b>。可以创建空用户，也可以用当前北京时间年月日作为密码认领已有用户。</p>
         <div className="grid md:grid-cols-[1fr_auto] gap-2 mb-3">
           <input
             value={newUser}
@@ -143,6 +173,32 @@ export default function Settings() {
             placeholder="例如 张三、student-a"
           />
           <button onClick={createNewUser} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">创建用户</button>
+        </div>
+        <div className="grid md:grid-cols-[1fr_140px_auto] gap-2 mb-3">
+          <select
+            value={claimTarget}
+            onChange={e => setClaimTarget(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
+          >
+            <option value="">选择要认领的用户</option>
+            {users.filter(u => u.id !== getCurrentUserId()).map(u => (
+              <option key={u.id} value={u.id}>{u.id}（{u.records} 条）</option>
+            ))}
+          </select>
+          <input
+            value={claimPassword}
+            onChange={e => setClaimPassword(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
+            inputMode="numeric"
+            placeholder="YYYYMMDD"
+          />
+          <button
+            onClick={claimExistingUser}
+            disabled={!claimTarget || !claimPassword.trim()}
+            className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
+          >
+            认领并切换
+          </button>
         </div>
         <div className="grid md:grid-cols-[1fr_auto] gap-2">
           <select

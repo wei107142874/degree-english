@@ -65,6 +65,22 @@ function cleanUserId(value) {
   return id && id.length <= 40 ? id : DEFAULT_USER_ID;
 }
 
+function cleanRequestedUserId(value) {
+  const id = String(value || '').trim();
+  return id && id.length <= 40 ? id : '';
+}
+
+function beijingDatePassword(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const get = (type) => parts.find(part => part.type === type)?.value || '';
+  return `${get('year')}${get('month')}${get('day')}`;
+}
+
 function validStore(store) {
   return STORES.includes(store);
 }
@@ -182,6 +198,24 @@ async function createUser(userId) {
   return rowCount > 0 ? id : null;
 }
 
+async function getUser(userId) {
+  const id = cleanRequestedUserId(userId);
+  if (!id) return null;
+  const { rows } = await pool.query(`
+    SELECT u.id, count(r.record_key) AS records, greatest(u.updated_at, coalesce(max(r.updated_at), 0)) AS updated_at
+    FROM users u
+    LEFT JOIN records r ON r.user_id = u.id
+    WHERE u.id = $1
+    GROUP BY u.id, u.updated_at
+  `, [id]);
+  const row = rows[0];
+  return row ? {
+    id: row.id,
+    records: Number(row.records || 0),
+    updatedAt: Number(row.updated_at || 0),
+  } : null;
+}
+
 async function upsertRecord(userId, store, rec, fallbackTs = Date.now(), db = pool) {
   const cleanId = await ensureUser(userId, db);
   const key = recordKey(store, rec);
@@ -251,8 +285,9 @@ async function listUsers() {
 }
 
 async function copyUserData(fromUserId, toUserId) {
-  const from = cleanUserId(fromUserId);
-  const to = cleanUserId(toUserId);
+  const from = cleanRequestedUserId(fromUserId);
+  const to = cleanRequestedUserId(toUserId);
+  if (!from || !to) throw new Error('invalid user');
   if (from === to) return 0;
   const client = await pool.connect();
   try {
@@ -411,7 +446,7 @@ function broadcastControl(msg) {
 
 async function handleDbApi(req, res, pathname) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const userId = cleanUserId(url.searchParams.get('user') || req.headers['x-user-id']);
+  const userId = cleanRequestedUserId(url.searchParams.get('user') || req.headers['x-user-id']);
 
   if (pathname === '/api/db/users' && req.method === 'GET') {
     return sendJson(res, 200, { ok: true, users: await listUsers() });
@@ -430,6 +465,21 @@ async function handleDbApi(req, res, pathname) {
     return sendJson(res, 200, { ok: true, user: { id, records: 0, updatedAt: Date.now() } });
   }
 
+  if (pathname === '/api/db/claim-user' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJson(req);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: 'invalid json' });
+    }
+    const user = await getUser(body.userId);
+    if (!user) return sendJson(res, 404, { ok: false, error: 'user not found' });
+    if (String(body.password || '').trim() !== beijingDatePassword()) {
+      return sendJson(res, 403, { ok: false, error: 'invalid password' });
+    }
+    return sendJson(res, 200, { ok: true, user, serverNow: Date.now() });
+  }
+
   if (pathname === '/api/db/copy-user' && req.method === 'POST') {
     let body;
     try {
@@ -437,14 +487,16 @@ async function handleDbApi(req, res, pathname) {
     } catch {
       return sendJson(res, 400, { ok: false, error: 'invalid json' });
     }
-    const fromUser = cleanUserId(body.fromUserId);
-    const toUser = cleanUserId(body.toUserId || userId);
+    const fromUser = cleanRequestedUserId(body.fromUserId);
+    const toUser = cleanRequestedUserId(body.toUserId || userId);
+    if (!fromUser || !toUser) return sendJson(res, 401, { ok: false, error: 'user not claimed' });
     if (fromUser === toUser) return sendJson(res, 400, { ok: false, error: 'same user' });
     const copied = await copyUserData(fromUser, toUser);
     return sendJson(res, 200, { ok: true, copied, serverNow: Date.now() });
   }
 
   if (pathname === '/api/db/import' && req.method === 'POST') {
+    if (!userId) return sendJson(res, 401, { ok: false, error: 'user not claimed' });
     let body;
     try {
       body = await readJson(req);
@@ -458,6 +510,7 @@ async function handleDbApi(req, res, pathname) {
   const parts = pathname.split('/').filter(Boolean);
   const store = parts[2];
   if (!validStore(store)) return sendJson(res, 404, { ok: false, error: 'unknown store' });
+  if (!userId) return sendJson(res, 401, { ok: false, error: 'user not claimed' });
 
   if (req.method === 'GET') {
     return sendJson(res, 200, { ok: true, records: await listRecords(userId, store) });
@@ -488,9 +541,10 @@ async function handleDbApi(req, res, pathname) {
 
 async function handleSyncCompat(req, res, pathname) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const userId = cleanUserId(url.searchParams.get('user') || req.headers['x-user-id']);
+  const userId = cleanRequestedUserId(url.searchParams.get('user') || req.headers['x-user-id']);
 
   if (pathname === '/api/sync/info' && req.method === 'GET') {
+    if (!userId) return sendJson(res, 401, { ok: false, error: 'user not claimed' });
     return sendJson(res, 200, {
       ok: true,
       serverTime: Date.now(),
@@ -504,6 +558,7 @@ async function handleSyncCompat(req, res, pathname) {
   }
 
   if ((pathname === '/api/sync/pull' || pathname === '/api/sync/push') && req.method === 'POST') {
+    if (!userId) return sendJson(res, 401, { ok: false, error: 'user not claimed' });
     let body;
     try {
       body = await readJson(req);

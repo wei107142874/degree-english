@@ -9,7 +9,6 @@ export interface DbSchema {
 }
 
 type StoreName = keyof DbSchema;
-const DEFAULT_USER_ID = '魏勇';
 const LEGACY_USER_ID = 'main';
 const USER_STORAGE_KEY = 'degree-english-user-id';
 
@@ -32,31 +31,30 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 export function cleanUserId(value: string | null | undefined): string {
   const id = String(value || '').trim();
-  return id && id.length <= 40 ? id : DEFAULT_USER_ID;
+  return id && id.length <= 40 && id !== LEGACY_USER_ID ? id : '';
 }
 
 export function getCurrentUserId(): string {
   try {
     const id = cleanUserId(localStorage.getItem(USER_STORAGE_KEY));
-    if (id === LEGACY_USER_ID) {
-      localStorage.setItem(USER_STORAGE_KEY, DEFAULT_USER_ID);
-      return DEFAULT_USER_ID;
-    }
     return id;
   } catch {
-    return DEFAULT_USER_ID;
+    return '';
   }
 }
 
 export function setCurrentUserId(userId: string) {
   const next = cleanUserId(userId);
+  if (!next) throw new Error('empty user');
   localStorage.setItem(USER_STORAGE_KEY, next);
   window.dispatchEvent(new CustomEvent('degree-english-user-change', { detail: next }));
 }
 
 export function withCurrentUser(url: string): string {
+  const userId = getCurrentUserId();
+  if (!userId) throw new Error('user not claimed');
   const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}user=${encodeURIComponent(getCurrentUserId())}`;
+  return `${url}${sep}user=${encodeURIComponent(userId)}`;
 }
 
 function storeUrl(store: StoreName | string, key?: string) {
@@ -148,18 +146,32 @@ export interface DbUser {
 }
 
 export async function listUsers(): Promise<DbUser[]> {
-  const data = await fetchJson<{ ok: boolean; users: DbUser[] }>(withCurrentUser('/api/db/users'));
+  const data = await fetchJson<{ ok: boolean; users: DbUser[] }>('/api/db/users');
   return data.users;
 }
 
 export async function createUser(userId: string): Promise<DbUser> {
-  const res = await fetch(withCurrentUser('/api/db/users'), {
+  const res = await fetch('/api/db/users', {
     method: 'POST',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId }),
   });
   if (res.status === 409) throw new Error('user exists');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json() as { ok: boolean; user: DbUser };
+  return data.user;
+}
+
+export async function claimUser(userId: string, password: string): Promise<DbUser> {
+  const res = await fetch('/api/db/claim-user', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, password }),
+  });
+  if (res.status === 403) throw new Error('invalid password');
+  if (res.status === 404) throw new Error('user not found');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json() as { ok: boolean; user: DbUser };
   return data.user;
