@@ -125,7 +125,7 @@ function ClaimRequired({ onClaimed }: { onClaimed: (userId: string) => void }) {
       enterAs(target)
     } catch (e) {
       if (e instanceof Error && e.message === 'invalid password') {
-        setMsg('认领失败：密码不是当前北京时间年月日')
+        setMsg('认领失败：密码错误')
       } else if (e instanceof Error && e.message === 'user not found') {
         setMsg('认领失败：用户不存在')
       } else {
@@ -169,7 +169,7 @@ function ClaimRequired({ onClaimed }: { onClaimed: (userId: string) => void }) {
         </div>
 
         <div className="border-t border-slate-200 pt-4 space-y-3">
-          <p className="text-xs text-slate-500">认领已有用户：密码为当前北京时间年月日，例如 20260918。</p>
+          <p className="text-xs text-slate-500">认领已有用户：请选择用户并输入认领密码。</p>
           <div>
             <label className="text-xs text-slate-500 block mb-1">用户</label>
             <select
@@ -186,12 +186,12 @@ function ClaimRequired({ onClaimed }: { onClaimed: (userId: string) => void }) {
           <div>
             <label className="text-xs text-slate-500 block mb-1">认领密码</label>
             <input
+              type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') void doClaim() }}
               className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-              inputMode="numeric"
-              placeholder="YYYYMMDD"
+              placeholder="请输入认领密码"
             />
           </div>
           <button

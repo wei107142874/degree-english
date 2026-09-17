@@ -121,7 +121,7 @@ export default function Settings() {
       setTimeout(() => location.reload(), 800)
     } catch (e) {
       if (e instanceof Error && e.message === 'invalid password') {
-        setMsg('认领失败：密码不是当前北京时间年月日')
+        setMsg('认领失败：密码错误')
       } else if (e instanceof Error && e.message === 'user not found') {
         setMsg('认领失败：用户不存在')
       } else {
@@ -164,7 +164,7 @@ export default function Settings() {
 
       <Card>
         <h2 className="font-bold text-slate-800 mb-2">用户数据隔离</h2>
-        <p className="text-xs text-slate-500 mb-3">当前用户：<b>{getCurrentUserId()}</b>。可以创建空用户，也可以用当前北京时间年月日作为密码认领已有用户。</p>
+        <p className="text-xs text-slate-500 mb-3">当前用户：<b>{getCurrentUserId()}</b>。可以创建空用户，也可以认领已有用户。</p>
         <div className="grid md:grid-cols-[1fr_auto] gap-2 mb-3">
           <input
             value={newUser}
@@ -186,11 +186,11 @@ export default function Settings() {
             ))}
           </select>
           <input
+            type="password"
             value={claimPassword}
             onChange={e => setClaimPassword(e.target.value)}
             className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-            inputMode="numeric"
-            placeholder="YYYYMMDD"
+            placeholder="请输入认领密码"
           />
           <button
             onClick={claimExistingUser}
