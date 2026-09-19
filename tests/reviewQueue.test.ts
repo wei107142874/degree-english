@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildReviewPool } from '../src/lib/reviewQueue';
+import { buildDueReviewPool, buildReviewPool } from '../src/lib/reviewQueue';
 import type { SrsState, Word } from '../src/types';
 
 function word(id: string): Word {
@@ -52,5 +52,34 @@ describe('复习队列', () => {
     const pool = buildReviewPool(words, states, 'all', sequenceRandom([0, 0]));
 
     expect(pool.map(w => w.id)).toEqual(['b', 'a']);
+  });
+
+  it('开始学习页的到期词只取已到期词，并按复习优先级推送', () => {
+    const now = Date.now();
+    const words = [word('a'), word('b'), word('c'), word('d')];
+    const states = {
+      a: state({ wordId: 'a', due: now - 1000 }),
+      b: state({ wordId: 'b', due: now - 3 * 86400000 }),
+      c: state({ wordId: 'c', due: now + 86400000 }),
+      d: state({ wordId: 'd', due: now - 1000, wrongCount: 10 }),
+    };
+
+    const pool = buildDueReviewPool(words, states, sequenceRandom([0, 0, 0]));
+
+    expect(pool.map(w => w.id)).toEqual(['d', 'b', 'a']);
+  });
+
+  it('同优先级到期词先打散，避免继承词库顺序', () => {
+    const now = Date.now();
+    const words = [word('a'), word('b'), word('c')];
+    const states = {
+      a: state({ wordId: 'a', due: now - 1000 }),
+      b: state({ wordId: 'b', due: now - 1000 }),
+      c: state({ wordId: 'c', due: now - 1000 }),
+    };
+
+    const pool = buildDueReviewPool(words, states, sequenceRandom([0, 0]));
+
+    expect(pool.map(w => w.id)).toEqual(['b', 'c', 'a']);
   });
 });

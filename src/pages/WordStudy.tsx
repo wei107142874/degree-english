@@ -8,11 +8,13 @@ import { speak } from '../components/common'
 import { WORD_ORDER_SEED, buildOrderIndex } from '../lib/wordOrder'
 import { dailyNewWordsPlan, inferRecognitionGrade, isRememberedGrade, todayStamp } from '../lib/srs'
 import { buildTodayBatch } from '../lib/studyBatch'
+import { buildDueReviewPool } from '../lib/reviewQueue'
 import { onControl, sendControl, useControlAvailable } from '../control/remote'
 import type { ControlPayload, RemoteState } from '../control/remote'
 import { baiduTranslateUrl } from '../lib/dictionary'
 
 type Mode = StudyMode
+const DEFAULT_REVIEW_BATCH_SIZE = 100
 
 const MODE_LABELS: Record<Mode, string> = {
   flashcard: '闪卡',
@@ -48,13 +50,7 @@ export default function WordStudy() {
   const settings = useSettingsStore(s => s.settings)
   const settingsLoaded = useSettingsStore(s => s.loaded)
 
-  const dueWords = useMemo(() => {
-    const now = Date.now()
-    return ALL_WORDS.filter(w => {
-      const st = states[w.id]
-      return st && st.level >= 1 && st.due <= now
-    })
-  }, [states])
+  const dueWords = useMemo(() => buildDueReviewPool(ALL_WORDS, states), [states])
 
   // 固定随机词序：种子持久化在服务器设置里（PostgreSQL + 备份），
   // 电脑与手机同种子 → 完全一致的顺序，且不会随会话变化。
@@ -64,6 +60,7 @@ export default function WordStudy() {
   )
 
   const dueTotal = dueWords.length
+  const reviewBatchSize = clampReviewBatchSize(settings.reviewBatchSize)
   const newWordsPlan = useMemo(
     () => dailyNewWordsPlan(settings.dailyNewWords || 30, dueTotal),
     [settings.dailyNewWords, dueTotal],
@@ -80,19 +77,23 @@ export default function WordStudy() {
 
   const batchTotal = batch.length
   const batchAllDone = batchTotal > 0 && batchDone >= batchTotal
-  const dueCount = Math.min(dueTotal, 50)
+  const dueCount = Math.min(dueTotal, reviewBatchSize)
   const progressLabel = batchTotal === 0
     ? dailyGoal === 0 ? '今日先清复习债' : '全部单词已学完'
     : batchAllDone
       ? `今日新词 ${batchTotal} 个已完成 ✓`
       : `新词 第 ${batchDone + 1} / ${batchTotal} 个`
-  const progressSummary = progressLabel + (dueCount > 0 ? ` · 复习 ${dueCount} 个到期` : '')
+  const progressSummary = progressLabel + (dueCount > 0
+    ? dueTotal > dueCount
+      ? ` · 本轮复习 ${dueCount}/${dueTotal} 个到期`
+      : ` · 复习 ${dueCount} 个到期`
+    : '')
   const newWordsPlanNote = newWordsPlan.recommended === newWordsPlan.base
     ? newWordsPlan.reason
     : `今日新词 ${newWordsPlan.recommended}/${newWordsPlan.base} · ${newWordsPlan.reason}`
 
   const buildQueue = (m: Mode) => {
-    const due = dueWords.slice(0, 50)
+    const due = dueWords.slice(0, reviewBatchSize)
     // 队列 = 到期复习词（优先）+ 今日批次中仍未学的新词（固定顺序）
     const q = m === 'flashcard' ? [...due, ...fresh] : shuffle([...due, ...fresh]).slice(0, 20)
     setQueue(q)
@@ -552,14 +553,20 @@ export default function WordStudy() {
   }
 
   if (finished) {
+    const hasMoreDue = dueTotal > 0
     return (
       <div className="space-y-4">
         <h1 className="text-2xl font-bold">本次学习完成 🎉</h1>
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center space-y-4">
           <div className="text-5xl">{doneCount > 0 && sessionCorrect / doneCount >= 0.8 ? '🌟' : '💪'}</div>
           <p className="text-slate-600">完成 {doneCount} 个单词，答对 {sessionCorrect} 个</p>
+          {hasMoreDue && (
+            <p className="text-sm text-amber-600">还有 {dueTotal} 个到期词，本轮只是清完了当前这一组。</p>
+          )}
           <div className="flex justify-center gap-3">
-            <button onClick={() => buildQueue('flashcard')} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">再学一轮</button>
+            <button onClick={() => buildQueue('flashcard')} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">
+              {hasMoreDue ? '继续清下一组' : '再学一轮'}
+            </button>
             <button onClick={() => navigate('/')} className="border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-600">回首页</button>
           </div>
         </div>
@@ -731,6 +738,10 @@ function shuffle<T>(arr: T[]): T[] {
     const t = a[i]; a[i] = a[j]; a[j] = t
   }
   return a
+}
+
+function clampReviewBatchSize(value: number): number {
+  return Math.max(10, Math.min(300, Math.round(value || DEFAULT_REVIEW_BATCH_SIZE)))
 }
 
 function ModeTabs({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }) {

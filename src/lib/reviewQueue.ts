@@ -19,6 +19,19 @@ export function buildReviewPool(
   return shuffled.sort((a, b) => reviewPriority(states[b.id]) - reviewPriority(states[a.id]));
 }
 
+export function buildDueReviewPool(
+  words: readonly Word[],
+  states: Record<string, SrsState | undefined>,
+  random: RandomSource = Math.random,
+): Word[] {
+  const now = Date.now();
+  const due = words.filter(w => {
+    const st = states[w.id];
+    return !!st && st.level >= 1 && st.due <= now;
+  });
+  return shuffle(due, random).sort((a, b) => reviewPriority(states[b.id]) - reviewPriority(states[a.id]));
+}
+
 export function reviewPriority(st: SrsState | undefined): number {
   if (!st) return 0;
   const now = Date.now();
